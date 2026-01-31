@@ -1,0 +1,43 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "agent-memory-mcp",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-01-29",
+	"compatibility_flags": ["nodejs_compat"],
+
+	// R2 bucket for file storage
+	"r2_buckets": [
+		{
+			"binding": "MEMORY_BUCKET",
+			"bucket_name": "agent-memory"
+		}
+	],
+
+	// Durable Objects for embedding index
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MEMORY_INDEX",
+				"class_name": "MemoryIndex"
+			}
+		]
+	},
+
+	// Workers AI for embeddings
+	"ai": {
+		"binding": "AI"
+	},
+
+	// SQLite storage for Durable Objects
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MemoryIndex"]
+		}
+	],
+
+	// Cron triggers for scheduled reflection
+	"triggers": {
+		"crons": ["0 6 * * *"]  // Daily at 6am UTC (London morning)
+	}
+}

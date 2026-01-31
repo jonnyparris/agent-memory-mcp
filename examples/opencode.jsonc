@@ -1,0 +1,29 @@
+{
+	// OpenCode MCP configuration for agent-memory-mcp
+	// Place this content in your .opencode/opencode.json file
+	//
+	// Prerequisites:
+	//   1. Deploy agent-memory-mcp to your Cloudflare account
+	//   2. Set MEMORY_AUTH_TOKEN in your environment (or .opencode/.env)
+	//      Example: export MEMORY_AUTH_TOKEN="your-secure-random-token"
+	//
+	// Replace YOUR_SUBDOMAIN with your workers.dev subdomain
+	// (find it at: https://dash.cloudflare.com > Workers & Pages > Overview)
+
+	"mcp": {
+		"agent-memory": {
+			// Remote MCP server - runs on Cloudflare Workers
+			"type": "remote",
+
+			// Your deployed worker URL
+			// Format: https://{worker-name}.{your-subdomain}.workers.dev/mcp
+			"url": "https://agent-memory-mcp.YOUR_SUBDOMAIN.workers.dev/mcp",
+
+			// Auth header - uses env var substitution
+			// OpenCode replaces {env:VAR_NAME} with the value of VAR_NAME
+			"headers": {
+				"Authorization": "Bearer {env:MEMORY_AUTH_TOKEN}"
+			}
+		}
+	}
+}

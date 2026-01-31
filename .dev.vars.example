@@ -1,0 +1,7 @@
+# Copy this file to .dev.vars and fill in your values
+MEMORY_AUTH_TOKEN=your-secret-token-here
+
+# Optional: Chat webhook for reflection notifications
+# CHAT_WEBHOOK_URL=https://your-chat-middleware.workers.dev/api/post-message
+# CHAT_WEBHOOK_AUTH_KEY=your-webhook-auth-key
+# CHAT_WEBHOOK_SPACE_ID=spaces/your-space-id
