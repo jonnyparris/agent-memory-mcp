@@ -100,10 +100,14 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 
 		// Try to notify about failure (if webhook configured)
 		if (env.CHAT_WEBHOOK_AUTH_KEY && env.CHAT_WEBHOOK_URL && env.CHAT_WEBHOOK_SPACE_ID) {
-			await sendChatNotification(env.CHAT_WEBHOOK_AUTH_KEY, `Reflection failed for ${date}: ${error}`, {
-				webhookUrl: env.CHAT_WEBHOOK_URL,
-				spaceId: env.CHAT_WEBHOOK_SPACE_ID,
-			});
+			await sendChatNotification(
+				env.CHAT_WEBHOOK_AUTH_KEY,
+				`Reflection failed for ${date}: ${error}`,
+				{
+					webhookUrl: env.CHAT_WEBHOOK_URL,
+					spaceId: env.CHAT_WEBHOOK_SPACE_ID,
+				},
+			);
 		}
 
 		return {
@@ -188,7 +192,9 @@ function buildReflectionPrompt(context: ReflectionContext): string {
 
 	const recentFilesInfo =
 		context.recentFiles.length > 0
-			? context.recentFiles.map((f) => `- ${f.path} (${f.size} bytes, updated ${f.updated_at})`).join("\n")
+			? context.recentFiles
+					.map((f) => `- ${f.path} (${f.size} bytes, updated ${f.updated_at})`)
+					.join("\n")
 			: "No files modified since last reflection";
 
 	const coreMemoryInfo = Object.entries(context.coreMemory)
@@ -304,7 +310,9 @@ function parseReflectionResponse(response: string, date: string): ParsedReflecti
 
 	// Extract summary section
 	const summaryMatch = content.match(/## Summary\n([\s\S]*?)(?=\n##|$)/);
-	const summary = summaryMatch ? summaryMatch[1].trim().slice(0, 200) : `Reflection completed for ${date}`;
+	const summary = summaryMatch
+		? summaryMatch[1].trim().slice(0, 200)
+		: `Reflection completed for ${date}`;
 
 	return {
 		summary,

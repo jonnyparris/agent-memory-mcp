@@ -440,6 +440,14 @@ interface URLSearchParams {
 	[Symbol.iterator](): IterableIterator<[string, string]>;
 }
 
+/**
+ * cloudflare:workers module declaration
+ * This module is provided by the Cloudflare Workers runtime
+ */
+declare module "cloudflare:workers" {
+	export { DurableObject };
+}
+
 // Node.js types for tests
 declare namespace NodeJS {
 	interface ProcessEnv {

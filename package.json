@@ -9,9 +9,9 @@
 		"deploy": "wrangler deploy",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"test:unit": "vitest run --dir test/unit",
-		"test:integration": "vitest run --dir test/integration",
-		"test:e2e": "vitest run --dir test/e2e",
+		"test:unit": "vitest run test/unit",
+		"test:integration": "vitest run test/integration",
+		"test:e2e": "vitest run test/e2e",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
@@ -24,14 +24,7 @@
 		"type": "git",
 		"url": "git+https://github.com/jonnyparris/agent-memory-mcp.git"
 	},
-	"keywords": [
-		"mcp",
-		"ai",
-		"memory",
-		"cloudflare",
-		"workers",
-		"semantic-search"
-	],
+	"keywords": ["mcp", "ai", "memory", "cloudflare", "workers", "semantic-search"],
 	"author": "Jonny Parris",
 	"license": "MIT",
 	"bugs": {

@@ -27,7 +27,10 @@ export class WorkersAIProvider implements LLMProvider {
 		this.model = model;
 	}
 
-	async complete(prompt: string | LLMMessage[], options?: LLMCompletionOptions): Promise<LLMCompletionResult> {
+	async complete(
+		prompt: string | LLMMessage[],
+		options?: LLMCompletionOptions,
+	): Promise<LLMCompletionResult> {
 		// Build messages array
 		const messages: LLMMessage[] = [];
 

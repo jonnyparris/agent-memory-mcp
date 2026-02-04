@@ -36,7 +36,10 @@ export interface LLMProvider {
 	 * @param prompt - User prompt or array of messages
 	 * @param options - Optional completion parameters
 	 */
-	complete(prompt: string | LLMMessage[], options?: LLMCompletionOptions): Promise<LLMCompletionResult>;
+	complete(
+		prompt: string | LLMMessage[],
+		options?: LLMCompletionOptions,
+	): Promise<LLMCompletionResult>;
 
 	/** Provider name for logging */
 	readonly name: string;

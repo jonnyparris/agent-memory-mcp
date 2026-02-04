@@ -6,14 +6,6 @@ export interface EmbeddingResult {
 	dimensions: number;
 }
 
-/**
- * Generate embeddings using Workers AI
- */
-interface EmbeddingResponse {
-	data: Array<{ embedding: number[] }> | ArrayLike<number>;
-	shape?: number[];
-}
-
 export async function generateEmbedding(ai: Ai, text: string): Promise<EmbeddingResult> {
 	// Truncate text if too long (model limit is typically 8192 tokens)
 	const truncatedText = text.slice(0, 32000);
@@ -43,11 +35,13 @@ export async function generateEmbedding(ai: Ai, text: string): Promise<Embedding
 		// Format: { shape: [...], data: Float32Array }
 		vector = Array.from(response.data as ArrayLike<number>);
 	} else {
-		throw new Error(`Unexpected embedding response format: ${JSON.stringify(response).slice(0, 500)}`);
+		throw new Error(
+			`Unexpected embedding response format: ${JSON.stringify(response).slice(0, 500)}`,
+		);
 	}
 
 	if (!vector || vector.length === 0) {
-		throw new Error(`Empty embedding vector received`);
+		throw new Error("Empty embedding vector received");
 	}
 
 	return {

@@ -127,7 +127,8 @@ describe("buildReflectionPrompt", () => {
 			recentFiles: [],
 			coreMemory: {},
 			patterns: {
-				"memory/patterns/cloudflare-workers.md": "# Cloudflare Workers\n- Always use DurableObject import",
+				"memory/patterns/cloudflare-workers.md":
+					"# Cloudflare Workers\n- Always use DurableObject import",
 			},
 		};
 
@@ -321,7 +322,9 @@ describe("LLM provider", () => {
 		expect(mockAI.run).toHaveBeenCalledWith(
 			"@cf/qwen/qwq-32b",
 			expect.objectContaining({
-				messages: expect.arrayContaining([expect.objectContaining({ role: "user", content: "Test prompt" })]),
+				messages: expect.arrayContaining([
+					expect.objectContaining({ role: "user", content: "Test prompt" }),
+				]),
 			}),
 		);
 

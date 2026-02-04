@@ -6,12 +6,6 @@ interface DOEnv {
 	AI: Ai;
 }
 
-interface MemoryRecord {
-	path: string;
-	embedding: number[];
-	updated_at: number;
-}
-
 /**
  * Durable Object for managing the memory search index
  */
@@ -37,17 +31,14 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 		// Rebuild HNSW index from stored embeddings
 		this.index = new HNSWIndex(EMBEDDING_DIMENSIONS);
 
-		const cursor = this.ctx.storage.sql.exec(
-			"SELECT path, embedding, updated_at FROM memories",
-		);
+		const cursor = this.ctx.storage.sql.exec("SELECT path, embedding, updated_at FROM memories");
 
 		for (const row of cursor) {
 			try {
 				// SQLite BLOB comes back as ArrayBuffer
 				const embeddingData = row.embedding as ArrayBuffer | Uint8Array;
-				const bytes = embeddingData instanceof Uint8Array 
-					? embeddingData 
-					: new Uint8Array(embeddingData);
+				const bytes =
+					embeddingData instanceof Uint8Array ? embeddingData : new Uint8Array(embeddingData);
 				const embedding = JSON.parse(new TextDecoder().decode(bytes));
 				this.index.insert(row.path as string, embedding);
 			} catch (e) {
@@ -62,10 +53,10 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 		try {
 			await this.initialize();
 		} catch (e) {
-			return new Response(
-				JSON.stringify({ error: "Failed to initialize", details: String(e) }),
-				{ status: 500, headers: { "Content-Type": "application/json" } },
-			);
+			return new Response(JSON.stringify({ error: "Failed to initialize", details: String(e) }), {
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			});
 		}
 
 		const url = new URL(request.url);
@@ -116,10 +107,10 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 				headers: { "Content-Type": "application/json" },
 			});
 		} catch (e) {
-			return new Response(
-				JSON.stringify({ error: "Failed to update", details: String(e) }),
-				{ status: 500, headers: { "Content-Type": "application/json" } },
-			);
+			return new Response(JSON.stringify({ error: "Failed to update", details: String(e) }), {
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			});
 		}
 	}
 
@@ -137,10 +128,10 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 				headers: { "Content-Type": "application/json" },
 			});
 		} catch (e) {
-			return new Response(
-				JSON.stringify({ error: "Failed to search", details: String(e) }),
-				{ status: 500, headers: { "Content-Type": "application/json" } },
-			);
+			return new Response(JSON.stringify({ error: "Failed to search", details: String(e) }), {
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			});
 		}
 	}
 

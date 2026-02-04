@@ -38,6 +38,6 @@
 
 	// Cron triggers for scheduled reflection
 	"triggers": {
-		"crons": ["0 6 * * *"]  // Daily at 6am UTC (London morning)
+		"crons": ["0 6 * * *"] // Daily at 6am UTC (London morning)
 	}
 }
