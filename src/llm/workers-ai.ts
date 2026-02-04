@@ -197,9 +197,7 @@ export class WorkersAIProvider implements LLMProvider {
 							function: {
 								name: tc.name,
 								arguments:
-									typeof tc.arguments === "string"
-										? tc.arguments
-										: JSON.stringify(tc.arguments),
+									typeof tc.arguments === "string" ? tc.arguments : JSON.stringify(tc.arguments),
 							},
 						})),
 					},
