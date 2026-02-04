@@ -1,13 +1,19 @@
 /**
  * Scheduled Reflection
  *
- * Runs daily via cron trigger. Reads recent memory changes,
- * calls LLM for reflection, stages changes for human review,
- * and sends notification.
+ * Runs daily via cron trigger. Supports two modes:
+ * - Agentic (default): Uses tool-calling LLMs for intelligent memory analysis
+ * - Legacy: Falls back to single-shot LLM for prose suggestions
+ *
+ * The agentic mode runs in two phases:
+ * 1. Quick Scan (GLM Flash): Auto-applies low-risk fixes
+ * 2. Deep Analysis (Kimi K2.5): Proposes substantive changes for human review
  */
 
 import { WorkersAIProvider } from "./llm/workers-ai";
 import { buildReflectionCard, sendChatNotification } from "./notification";
+import { type AgenticReflectionResult, runAgenticReflection } from "./reflection/agentic";
+import { writeStagedReflection } from "./reflection/staging";
 import type { R2Storage } from "./storage/r2";
 import { createR2Storage } from "./storage/r2";
 import type { Env, MemoryFileMetadata } from "./types";
@@ -16,10 +22,10 @@ import type { Env, MemoryFileMetadata } from "./types";
 const LAST_REFLECTION_PATH = "memory/meta/last-reflection.json";
 const PENDING_DIR = "memory/reflections/pending";
 
-// Core memory files to always include in reflection
+// Core memory files to always include in reflection (legacy mode)
 const CORE_MEMORY_PATHS = ["memory/learnings.md", "memory/preferences.md", "memory/projects.md"];
 
-// Pattern paths to include
+// Pattern paths to include (legacy mode)
 const PATTERNS_DIR = "memory/patterns";
 
 interface LastReflection {
@@ -41,6 +47,9 @@ export interface ReflectionResult {
 	pendingPath?: string;
 	summary?: string;
 	error?: string;
+	mode?: "agentic" | "legacy";
+	autoApplied?: number;
+	proposed?: number;
 }
 
 /**
@@ -49,54 +58,59 @@ export interface ReflectionResult {
 export async function runReflection(env: Env): Promise<ReflectionResult> {
 	const date = new Date().toISOString().split("T")[0];
 	const storage = createR2Storage(env.MEMORY_BUCKET);
-	const llm = new WorkersAIProvider(env.AI);
+
+	// Check if agentic mode is enabled (default: true)
+	const useAgentic = env.USE_AGENTIC_REFLECTION !== "false";
 
 	try {
-		// 1. Gather context
-		const context = await gatherContext(storage, date);
+		let result: ReflectionResult;
 
-		// 2. Build prompt and call LLM
-		const prompt = buildReflectionPrompt(context);
-		const llmResult = await llm.complete(prompt, {
-			systemPrompt: SYSTEM_PROMPT,
-			maxTokens: 4096,
-			temperature: 0.7,
-		});
+		if (useAgentic) {
+			result = await runAgenticReflectionFlow(env, storage, date);
+		} else {
+			result = await runLegacyReflection(env, storage, date);
+		}
 
-		// 3. Parse and validate response
-		const reflection = parseReflectionResponse(llmResult.response, date);
-
-		// 4. Write staged changes
-		const pendingPath = `${PENDING_DIR}/${date}.md`;
-		await storage.write(pendingPath, reflection.content);
-
-		// 5. Update last reflection timestamp
-		await storage.write(
-			LAST_REFLECTION_PATH,
+		// Log result for monitoring
+		console.log(
 			JSON.stringify({
-				timestamp: Date.now(),
+				event: "reflection_complete",
 				date,
+				mode: result.mode,
+				success: result.success,
+				autoApplied: result.autoApplied ?? 0,
+				proposed: result.proposed ?? 0,
+				error: result.error,
 			}),
 		);
 
-		// 6. Send notification (if webhook configured)
+		// Send notification (if webhook configured)
 		if (env.CHAT_WEBHOOK_AUTH_KEY && env.CHAT_WEBHOOK_URL && env.CHAT_WEBHOOK_SPACE_ID) {
-			const card = buildReflectionCard(date, reflection.summary, pendingPath);
-			await sendChatNotification(env.CHAT_WEBHOOK_AUTH_KEY, reflection.summary, {
+			const card = buildReflectionCard(
+				date,
+				result.summary ?? "Reflection complete",
+				result.pendingPath ?? "",
+				result.proposed,
+				result.autoApplied,
+			);
+			await sendChatNotification(env.CHAT_WEBHOOK_AUTH_KEY, result.summary ?? "", {
 				webhookUrl: env.CHAT_WEBHOOK_URL,
 				spaceId: env.CHAT_WEBHOOK_SPACE_ID,
 				card,
 			});
 		}
 
-		return {
-			success: true,
-			date,
-			pendingPath,
-			summary: reflection.summary,
-		};
+		return result;
 	} catch (e) {
 		const error = e instanceof Error ? e.message : String(e);
+
+		console.error(
+			JSON.stringify({
+				event: "reflection_failed",
+				date,
+				error,
+			}),
+		);
 
 		// Try to notify about failure (if webhook configured)
 		if (env.CHAT_WEBHOOK_AUTH_KEY && env.CHAT_WEBHOOK_URL && env.CHAT_WEBHOOK_SPACE_ID) {
@@ -119,7 +133,103 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 }
 
 /**
- * Gather all context needed for reflection
+ * Run agentic reflection with tool calling
+ */
+async function runAgenticReflectionFlow(
+	env: Env,
+	storage: R2Storage,
+	date: string,
+): Promise<ReflectionResult> {
+	const agenticResult: AgenticReflectionResult = await runAgenticReflection(env, storage);
+
+	// Write staged changes for human review
+	const pendingPath = await writeStagedReflection(storage, {
+		date,
+		summary: agenticResult.summary,
+		proposedEdits: agenticResult.proposedEdits,
+		autoAppliedFixes: agenticResult.autoAppliedFixes,
+		flaggedIssues: agenticResult.flaggedIssues,
+		quickScanIterations: agenticResult.quickScanIterations,
+		deepAnalysisIterations: agenticResult.deepAnalysisIterations,
+	});
+
+	// Update last reflection timestamp
+	await storage.write(
+		LAST_REFLECTION_PATH,
+		JSON.stringify({
+			timestamp: Date.now(),
+			date,
+		}),
+	);
+
+	const summaryParts = [agenticResult.summary];
+	if (agenticResult.autoAppliedFixes.length > 0) {
+		summaryParts.push(`Auto-applied ${agenticResult.autoAppliedFixes.length} fixes.`);
+	}
+	if (agenticResult.proposedEdits.length > 0) {
+		summaryParts.push(`${agenticResult.proposedEdits.length} changes proposed for review.`);
+	}
+
+	return {
+		success: agenticResult.success,
+		date,
+		pendingPath,
+		summary: summaryParts.join(" "),
+		mode: "agentic",
+		autoApplied: agenticResult.autoAppliedFixes.length,
+		proposed: agenticResult.proposedEdits.length,
+		error: agenticResult.error,
+	};
+}
+
+/**
+ * Run legacy single-shot reflection (fallback)
+ */
+async function runLegacyReflection(
+	env: Env,
+	storage: R2Storage,
+	date: string,
+): Promise<ReflectionResult> {
+	const llm = new WorkersAIProvider(env.AI);
+
+	// 1. Gather context
+	const context = await gatherContext(storage, date);
+
+	// 2. Build prompt and call LLM
+	const prompt = buildReflectionPrompt(context);
+	const llmResult = await llm.complete(prompt, {
+		systemPrompt: LEGACY_SYSTEM_PROMPT,
+		maxTokens: 4096,
+		temperature: 0.7,
+	});
+
+	// 3. Parse and validate response
+	const reflection = parseReflectionResponse(llmResult.response, date);
+
+	// 4. Write staged changes
+	const pendingPath = `${PENDING_DIR}/${date}.md`;
+	await storage.write(pendingPath, reflection.content);
+
+	// 5. Update last reflection timestamp
+	await storage.write(
+		LAST_REFLECTION_PATH,
+		JSON.stringify({
+			timestamp: Date.now(),
+			date,
+		}),
+	);
+
+	return {
+		success: true,
+		date,
+		pendingPath,
+		summary: reflection.summary,
+		mode: "legacy",
+	};
+}
+
+/**
+ * Gather all context needed for legacy reflection
  */
 async function gatherContext(storage: R2Storage, date: string): Promise<ReflectionContext> {
 	// Get last reflection time
@@ -183,7 +293,7 @@ function filterRecentFiles(files: MemoryFileMetadata[], since?: number): MemoryF
 }
 
 /**
- * Build the reflection prompt
+ * Build the reflection prompt (legacy mode)
  */
 function buildReflectionPrompt(context: ReflectionContext): string {
 	const lastReflectionInfo = context.lastReflection
@@ -277,7 +387,7 @@ Respond in this exact markdown format:
 \`\`\``;
 }
 
-const SYSTEM_PROMPT = `You are an AI agent reflecting on your memory system to improve over time.
+const LEGACY_SYSTEM_PROMPT = `You are an AI agent reflecting on your memory system to improve over time.
 
 Your memory contains:
 - learnings.md: Technical lessons and gotchas
@@ -301,7 +411,7 @@ interface ParsedReflection {
 }
 
 /**
- * Parse the LLM response and extract structured content
+ * Parse the LLM response and extract structured content (legacy mode)
  */
 function parseReflectionResponse(response: string, date: string): ParsedReflection {
 	// Try to extract markdown block

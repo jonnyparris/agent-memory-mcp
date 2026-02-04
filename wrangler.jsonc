@@ -39,5 +39,12 @@
 	// Cron triggers for scheduled reflection
 	"triggers": {
 		"crons": ["0 6 * * *"] // Daily at 6am UTC (London morning)
+	},
+
+	// Reflection model configuration
+	"vars": {
+		"REFLECTION_MODEL": "@cf/moonshotai/kimi-k2.5",
+		"REFLECTION_MODEL_FAST": "@cf/zai-org/glm-4.7-flash",
+		"USE_AGENTIC_REFLECTION": "true"
 	}
 }

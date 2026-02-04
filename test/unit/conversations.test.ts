@@ -1,12 +1,11 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
-	parseOpenCodeSession,
-	loadConversationIndex,
-	saveConversationIndex,
-	indexSessions,
-	getConversationStats,
 	expandConversation,
-	type ConversationExchange,
+	getConversationStats,
+	indexSessions,
+	loadConversationIndex,
+	parseOpenCodeSession,
+	saveConversationIndex,
 } from "../../src/conversations";
 import { createMockStorage } from "../mocks/storage";
 
@@ -16,8 +15,16 @@ describe("parseOpenCodeSession", () => {
 			id: "test-session",
 			createdAt: "2026-01-31T10:00:00Z",
 			messages: [
-				{ role: "user" as const, content: "How do I create a Worker?", timestamp: "2026-01-31T10:00:00Z" },
-				{ role: "assistant" as const, content: "You can create a Worker using wrangler init.", timestamp: "2026-01-31T10:00:01Z" },
+				{
+					role: "user" as const,
+					content: "How do I create a Worker?",
+					timestamp: "2026-01-31T10:00:00Z",
+				},
+				{
+					role: "assistant" as const,
+					content: "You can create a Worker using wrangler init.",
+					timestamp: "2026-01-31T10:00:01Z",
+				},
 			],
 		};
 
@@ -55,7 +62,7 @@ describe("parseOpenCodeSession", () => {
 			messages: [
 				{ role: "user" as const, content: "Run the build" },
 				{ role: "assistant" as const, content: "Running build..." },
-				{ role: "user" as const, content: '<tool_result>Build successful</tool_result>' },
+				{ role: "user" as const, content: "<tool_result>Build successful</tool_result>" },
 				{ role: "assistant" as const, content: "Build completed successfully!" },
 				{ role: "user" as const, content: "Thanks!" },
 				{ role: "assistant" as const, content: "You're welcome!" },
@@ -89,7 +96,7 @@ describe("parseOpenCodeSession", () => {
 	it("should skip very short messages", () => {
 		const sessionData = {
 			messages: [
-				{ role: "user" as const, content: "ok" },  // 2 chars, skipped
+				{ role: "user" as const, content: "ok" }, // 2 chars, skipped
 				{ role: "assistant" as const, content: "Sure!" },
 				{ role: "user" as const, content: "What is TypeScript?" },
 				{ role: "assistant" as const, content: "TypeScript is a typed superset of JavaScript." },
@@ -109,7 +116,10 @@ describe("parseOpenCodeSession", () => {
 		// we need messages that don't start with "# Agent Context" but contain "User message:"
 		const sessionData = {
 			messages: [
-				{ role: "user" as const, content: "Some preamble context here...\nUser message: What is KV?" },
+				{
+					role: "user" as const,
+					content: "Some preamble context here...\nUser message: What is KV?",
+				},
 				{ role: "assistant" as const, content: "KV is a key-value store." },
 			],
 		};
@@ -165,9 +175,7 @@ describe("parseOpenCodeSession", () => {
 
 	it("should handle session with only user messages (no assistant response)", () => {
 		const sessionData = {
-			messages: [
-				{ role: "user" as const, content: "Question without answer" },
-			],
+			messages: [{ role: "user" as const, content: "Question without answer" }],
 		};
 
 		const exchanges = parseOpenCodeSession("session-1", "project", sessionData);

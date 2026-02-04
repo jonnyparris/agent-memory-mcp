@@ -1,11 +1,11 @@
-import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	listReminders,
-	scheduleReminder,
-	removeReminder,
+	type Reminder,
 	checkReminders,
 	getReminder,
-	type Reminder,
+	listReminders,
+	removeReminder,
+	scheduleReminder,
 } from "../../src/reminders";
 import { createMockStorage } from "../mocks/storage";
 

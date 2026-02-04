@@ -103,27 +103,55 @@ export async function sendChatNotification(
 /**
  * Build a reflection completion notification card
  */
-export function buildReflectionCard(date: string, summary: string, pendingPath: string): ChatCard {
+export function buildReflectionCard(
+	date: string,
+	summary: string,
+	pendingPath: string,
+	proposedChanges?: number,
+	autoApplied?: number,
+): ChatCard {
+	const sections: ChatCard["sections"] = [
+		{
+			header: "Summary",
+			widgets: [{ textParagraph: { text: summary } }],
+		},
+	];
+
+	// Add statistics section if we have counts
+	if (proposedChanges !== undefined || autoApplied !== undefined) {
+		const statsLines: string[] = [];
+		if (autoApplied !== undefined && autoApplied > 0) {
+			statsLines.push(`<b>${autoApplied}</b> low-risk fixes auto-applied`);
+		}
+		if (proposedChanges !== undefined && proposedChanges > 0) {
+			statsLines.push(`<b>${proposedChanges}</b> changes staged for review`);
+		}
+
+		if (statsLines.length > 0) {
+			sections.push({
+				header: "Changes",
+				widgets: [{ textParagraph: { text: statsLines.join("\n") } }],
+			});
+		}
+	}
+
+	// Add next steps
+	sections.push({
+		header: "Next Steps",
+		widgets: [
+			{
+				textParagraph: {
+					text: `Review pending changes at: <code>${pendingPath}</code>\n\nApprove or reject changes to update the memory.`,
+				},
+			},
+		],
+	});
+
 	return {
 		header: {
 			title: "Agent Memory Reflection Complete",
 			subtitle: `Daily reflection for ${date}`,
 		},
-		sections: [
-			{
-				header: "Summary",
-				widgets: [{ textParagraph: { text: summary } }],
-			},
-			{
-				header: "Next Steps",
-				widgets: [
-					{
-						textParagraph: {
-							text: `Review pending changes at: <code>${pendingPath}</code>\n\nApprove or reject changes to update the memory.`,
-						},
-					},
-				],
-			},
-		],
+		sections,
 	};
 }

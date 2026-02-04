@@ -6,7 +6,7 @@ export interface ExecuteMemoryApi {
 }
 
 export interface ExecuteResult {
-	content: Array<{ type: string; text: string }>;
+	content: Array<{ type: "text"; text: string }>;
 	isError?: boolean;
 }
 
@@ -26,13 +26,13 @@ export async function executeCode(
 		const result = await fn(memoryApi);
 
 		return {
-			content: [{ type: "text", text: JSON.stringify({ result }) }],
+			content: [{ type: "text" as const, text: JSON.stringify({ result }) }],
 		};
 	} catch (e) {
 		return {
 			content: [
 				{
-					type: "text",
+					type: "text" as const,
 					text: JSON.stringify({
 						error: "Execution failed",
 						details: e instanceof Error ? e.message : String(e),

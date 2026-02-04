@@ -6,8 +6,38 @@
  */
 
 export interface LLMMessage {
-	role: "system" | "user" | "assistant";
+	role: "system" | "user" | "assistant" | "tool";
 	content: string;
+	/** Tool call ID for tool responses */
+	tool_call_id?: string;
+}
+
+/**
+ * Tool definition for function calling
+ */
+export interface LLMTool {
+	name: string;
+	description: string;
+	parameters: {
+		type: "object";
+		properties: Record<
+			string,
+			{
+				type: string;
+				description: string;
+				enum?: string[];
+			}
+		>;
+		required?: string[];
+	};
+}
+
+/**
+ * Tool call from LLM response
+ */
+export interface LLMToolCall {
+	name: string;
+	arguments: Record<string, unknown>;
 }
 
 export interface LLMCompletionOptions {
@@ -17,6 +47,8 @@ export interface LLMCompletionOptions {
 	temperature?: number;
 	/** System prompt to prepend */
 	systemPrompt?: string;
+	/** Tools available for the LLM to call */
+	tools?: LLMTool[];
 }
 
 export interface LLMCompletionResult {
@@ -28,6 +60,8 @@ export interface LLMCompletionResult {
 		completionTokens?: number;
 		totalTokens?: number;
 	};
+	/** Tool calls requested by the LLM */
+	toolCalls?: LLMToolCall[];
 }
 
 export interface LLMProvider {
