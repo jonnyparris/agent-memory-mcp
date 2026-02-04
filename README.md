@@ -175,6 +175,41 @@ conversation_stats()
 // Returns: { exchangeCount: 150, sessionCount: 25, lastUpdated: "..." }
 ```
 
+## Scheduled Reflection
+
+The server includes an agentic self-improvement system that runs daily via cron trigger (6am UTC).
+
+### How It Works
+
+1. **Quick Scan** (GLM Flash): Scans memory files for simple issues like typos, formatting, and duplicates. Auto-applies safe fixes.
+
+2. **Deep Analysis** (Kimi K2.5): Analyzes memory for contradictions, outdated info, gaps, and semantic duplicates. Proposes substantive changes for human review.
+
+3. **Staged Changes**: All proposed changes are written to `memory/reflections/pending/` for review before applying.
+
+4. **Notifications**: Sends a summary to Google Chat after each reflection.
+
+### Reflection Tools
+
+The following MCP tools are available for managing reflections:
+
+- `list_pending_reflections` - List pending reflection files awaiting review
+- `apply_reflection_changes` - Apply proposed changes from a reflection
+- `archive_reflection` - Move a reviewed reflection to the archive
+
+### Manual Trigger
+
+```bash
+curl -X POST "https://your-worker.workers.dev/reflect" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+### Models Used
+
+- **Primary (Deep Analysis)**: `@cf/moonshotai/kimi-k2.5` - 1T parameter model for high-quality reasoning
+- **Fast (Quick Scan)**: `@cf/zai-org/glm-4.7-flash` - Lightweight model for rapid scans
+- **Fallback**: `@cf/meta/llama-3.3-70b-instruct-fp8-fast` - Proven reliable if others unavailable
+
 ## Reminders
 
 Schedule reminders that fire on client poll.

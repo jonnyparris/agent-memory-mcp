@@ -2,7 +2,8 @@
  * Workers AI LLM Provider
  *
  * Uses Cloudflare Workers AI for LLM completions.
- * Supports tool calling for agentic workflows.
+ * Supports tool calling for agentic workflows via the OpenAI-compatible
+ * /v1/chat/completions endpoint.
  *
  * Models with tool calling support:
  * - @cf/moonshotai/kimi-k2.5 (1T params, highest quality) - PRIMARY
@@ -20,22 +21,37 @@ import type {
 	LLMToolCall,
 } from "./types";
 
-/** Workers AI text generation response shape */
-interface WorkersAITextResponse {
-	response?: string;
-	// Some models return this format
-	result?: {
-		response?: string;
-	};
-	// Tool calls from function calling models
-	tool_calls?: Array<{
-		name: string;
-		arguments: string | Record<string, unknown>;
+/** OpenAI-compatible chat completion response */
+interface ChatCompletionResponse {
+	id: string;
+	object: string;
+	created: number;
+	model: string;
+	choices: Array<{
+		index: number;
+		message: {
+			role: string;
+			content: string | null;
+			tool_calls?: Array<{
+				id: string;
+				type: "function";
+				function: {
+					name: string;
+					arguments: string;
+				};
+			}>;
+		};
+		finish_reason: string;
 	}>;
+	usage?: {
+		prompt_tokens: number;
+		completion_tokens: number;
+		total_tokens: number;
+	};
 }
 
-/** Workers AI tool format */
-interface WorkersAITool {
+/** OpenAI-compatible tool format */
+interface OpenAITool {
 	type: "function";
 	function: {
 		name: string;
@@ -60,7 +76,7 @@ export class WorkersAIProvider implements LLMProvider {
 		options?: LLMCompletionOptions,
 	): Promise<LLMCompletionResult> {
 		// Build messages array
-		const messages: LLMMessage[] = [];
+		const messages: Array<{ role: string; content: string }> = [];
 
 		// Add system prompt if provided
 		if (options?.systemPrompt) {
@@ -71,49 +87,144 @@ export class WorkersAIProvider implements LLMProvider {
 		if (typeof prompt === "string") {
 			messages.push({ role: "user", content: prompt });
 		} else {
-			messages.push(...prompt);
+			messages.push(...prompt.map((m) => ({ role: m.role, content: m.content })));
 		}
 
-		// Convert tools to Workers AI format
-		const tools = options?.tools ? this.convertTools(options.tools) : undefined;
+		// Convert tools to OpenAI format for /v1/chat/completions endpoint
+		const tools = options?.tools ? this.convertToOpenAITools(options.tools) : undefined;
 
-		// Build request options
-		const requestOptions: Record<string, unknown> = {
-			messages,
-			max_tokens: options?.maxTokens,
-			temperature: options?.temperature,
-		};
+		// Debug: Log the request being sent
+		console.log(
+			JSON.stringify({
+				event: "workers_ai_request",
+				model: this.model,
+				messageCount: messages.length,
+				toolCount: tools?.length ?? 0,
+				tools: tools?.map((t) => t.function.name),
+				endpoint: "/v1/chat/completions",
+			}),
+		);
 
-		// Only add tools if provided (some models don't support them)
-		if (tools && tools.length > 0) {
-			requestOptions.tools = tools;
-		}
+		// Use the /v1/chat/completions endpoint via the AI binding's gateway
+		// This provides OpenAI-compatible tool calling support
+		const response = await this.callChatCompletions(messages, tools, options);
 
-		// Call Workers AI
-		// Note: Type assertion needed because Workers AI types are incomplete
-		const response = (await this.ai.run(
-			this.model as Parameters<Ai["run"]>[0],
-			requestOptions,
-		)) as WorkersAITextResponse;
+		// Debug: Log the raw response
+		console.log(
+			JSON.stringify({
+				event: "workers_ai_response",
+				model: this.model,
+				hasContent: !!response.choices?.[0]?.message?.content,
+				contentLength: response.choices?.[0]?.message?.content?.length ?? 0,
+				hasToolCalls: !!response.choices?.[0]?.message?.tool_calls,
+				toolCallCount: response.choices?.[0]?.message?.tool_calls?.length ?? 0,
+				finishReason: response.choices?.[0]?.finish_reason,
+			}),
+		);
 
-		// Handle different response formats
-		const responseText = response?.response ?? response?.result?.response ?? "";
+		const choice = response.choices?.[0];
+		const responseText = choice?.message?.content ?? "";
 
-		// Parse tool calls if present
-		const toolCalls = this.parseToolCalls(response?.tool_calls);
+		// Parse tool calls from OpenAI format
+		const toolCalls = this.parseOpenAIToolCalls(choice?.message?.tool_calls);
 
 		return {
 			response: responseText,
-			// Workers AI doesn't expose token usage in the response
-			usage: undefined,
+			usage: response.usage
+				? {
+						promptTokens: response.usage.prompt_tokens,
+						completionTokens: response.usage.completion_tokens,
+						totalTokens: response.usage.total_tokens,
+					}
+				: undefined,
 			toolCalls,
 		};
 	}
 
 	/**
-	 * Convert our tool format to Workers AI format
+	 * Call the /v1/chat/completions endpoint
 	 */
-	private convertTools(tools: LLMTool[]): WorkersAITool[] {
+	private async callChatCompletions(
+		messages: Array<{ role: string; content: string }>,
+		tools: OpenAITool[] | undefined,
+		options?: LLMCompletionOptions,
+	): Promise<ChatCompletionResponse> {
+		// Build request body
+		const body: Record<string, unknown> = {
+			model: this.model,
+			messages,
+			max_tokens: options?.maxTokens ?? 2048,
+			temperature: options?.temperature ?? 0.7,
+		};
+
+		if (tools && tools.length > 0) {
+			body.tools = tools;
+			// Let the model decide when to use tools
+			body.tool_choice = "auto";
+		}
+
+		// Use the AI binding's run method with the special chat completions format
+		// The AI binding internally routes to the /v1/chat/completions endpoint
+		// when using the OpenAI-compatible request format
+		const response = (await this.ai.run(this.model as Parameters<Ai["run"]>[0], body)) as unknown;
+
+		// The response from ai.run with this format should match ChatCompletionResponse
+		// but we need to handle both the direct response and wrapped response formats
+		if (this.isChatCompletionResponse(response)) {
+			return response;
+		}
+
+		// Fallback: wrap legacy response format
+		const legacyResponse = response as {
+			response?: string;
+			tool_calls?: Array<{ name: string; arguments: string | Record<string, unknown> }>;
+		};
+
+		return {
+			id: "legacy",
+			object: "chat.completion",
+			created: Date.now(),
+			model: this.model,
+			choices: [
+				{
+					index: 0,
+					message: {
+						role: "assistant",
+						content: legacyResponse.response ?? null,
+						tool_calls: legacyResponse.tool_calls?.map((tc, i) => ({
+							id: `call_${i}`,
+							type: "function" as const,
+							function: {
+								name: tc.name,
+								arguments:
+									typeof tc.arguments === "string"
+										? tc.arguments
+										: JSON.stringify(tc.arguments),
+							},
+						})),
+					},
+					finish_reason: legacyResponse.tool_calls ? "tool_calls" : "stop",
+				},
+			],
+		};
+	}
+
+	/**
+	 * Type guard for ChatCompletionResponse
+	 */
+	private isChatCompletionResponse(response: unknown): response is ChatCompletionResponse {
+		return (
+			typeof response === "object" &&
+			response !== null &&
+			"choices" in response &&
+			Array.isArray((response as ChatCompletionResponse).choices)
+		);
+	}
+
+	/**
+	 * Convert our flat tool format to OpenAI format
+	 */
+	private convertToOpenAITools(tools: LLMTool[]): OpenAITool[] {
 		return tools.map((tool) => ({
 			type: "function" as const,
 			function: {
@@ -125,31 +236,29 @@ export class WorkersAIProvider implements LLMProvider {
 	}
 
 	/**
-	 * Parse tool calls from Workers AI response
+	 * Parse tool calls from OpenAI format
 	 */
-	private parseToolCalls(
-		rawToolCalls?: Array<{ name: string; arguments: string | Record<string, unknown> }>,
+	private parseOpenAIToolCalls(
+		toolCalls?: Array<{
+			id: string;
+			type: "function";
+			function: { name: string; arguments: string };
+		}>,
 	): LLMToolCall[] | undefined {
-		if (!rawToolCalls || rawToolCalls.length === 0) {
+		if (!toolCalls || toolCalls.length === 0) {
 			return undefined;
 		}
 
-		return rawToolCalls.map((call) => {
-			// Arguments may be a string (JSON) or already an object
+		return toolCalls.map((call) => {
 			let args: Record<string, unknown>;
-			if (typeof call.arguments === "string") {
-				try {
-					args = JSON.parse(call.arguments);
-				} catch {
-					// If JSON parsing fails, treat as empty args
-					args = {};
-				}
-			} else {
-				args = call.arguments ?? {};
+			try {
+				args = JSON.parse(call.function.arguments);
+			} catch {
+				args = {};
 			}
 
 			return {
-				name: call.name,
+				name: call.function.name,
 				arguments: args,
 			};
 		});
