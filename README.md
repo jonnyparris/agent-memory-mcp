@@ -131,6 +131,105 @@ execute({
 // Returns: { result: 5 }
 ```
 
+## Conversation Indexing
+
+Index and search past AI assistant conversations.
+
+### `index_conversations`
+Bulk index sessions from your AI assistant (e.g., OpenCode sessions).
+
+```typescript
+index_conversations({
+  sessions: [
+    {
+      sessionId: "session-123",
+      project: "my-project",
+      data: { messages: [...] }
+    }
+  ]
+})
+// Returns: { added: 5, updated: 0, unchanged: 2 }
+```
+
+### `search_conversations`
+Semantic search across past conversations.
+
+```typescript
+search_conversations({ query: "how to deploy workers", limit: 10 })
+// Returns: { results: [{ exchange, score, adjustedScore }] }
+```
+
+### `expand_conversation`
+Get full context around a conversation exchange.
+
+```typescript
+expand_conversation({ sessionId: "session-123", exchangeId: "session-123-5" })
+// Returns: { project, exchanges, messages }
+```
+
+### `conversation_stats`
+Get statistics about indexed conversations.
+
+```typescript
+conversation_stats()
+// Returns: { exchangeCount: 150, sessionCount: 25, lastUpdated: "..." }
+```
+
+## Reminders
+
+Schedule reminders that fire on client poll.
+
+### `schedule_reminder`
+Create a one-shot or recurring reminder.
+
+```typescript
+// One-shot reminder
+schedule_reminder({
+  id: "meeting-prep",
+  type: "once",
+  expression: "2026-02-01T10:00:00Z",
+  description: "Prepare for team meeting",
+  payload: "Review agenda and prepare status update"
+})
+
+// Cron reminder (daily at 9am UTC)
+schedule_reminder({
+  id: "daily-standup",
+  type: "cron",
+  expression: "0 9 * * *",
+  description: "Daily standup",
+  payload: "Time for daily standup!"
+})
+```
+
+### `check_reminders`
+Poll for fired reminders. Clients call this on startup.
+
+```typescript
+check_reminders()
+// Returns: { fired: [{ reminder, firedAt }] }
+```
+
+### `list_reminders`
+List all scheduled reminders.
+
+```typescript
+list_reminders()
+// Returns: { reminders: [...] }
+```
+
+### `remove_reminder`
+Delete a reminder by ID.
+
+```typescript
+remove_reminder({ id: "daily-standup" })
+// Returns: { success: true }
+```
+
+## Time-Weighted Search
+
+Search results are automatically boosted by recency. Recent memories rank higher than older ones using exponential decay with a 30-day half-life.
+
 ## Recommended Memory Structure
 
 ```
