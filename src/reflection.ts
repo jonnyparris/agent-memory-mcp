@@ -84,8 +84,14 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 			}),
 		);
 
-		// Send notification (if webhook configured)
-		if (env.CHAT_WEBHOOK_AUTH_KEY && env.CHAT_WEBHOOK_URL && env.CHAT_WEBHOOK_SPACE_ID) {
+		// Send notification only if there's something actionable (if webhook configured)
+		const hasActionableChanges = (result.proposed ?? 0) > 0 || (result.autoApplied ?? 0) > 0;
+		if (
+			hasActionableChanges &&
+			env.CHAT_WEBHOOK_AUTH_KEY &&
+			env.CHAT_WEBHOOK_URL &&
+			env.CHAT_WEBHOOK_SPACE_ID
+		) {
 			const card = buildReflectionCard(
 				date,
 				result.summary ?? "Reflection complete",
@@ -142,16 +148,22 @@ async function runAgenticReflectionFlow(
 ): Promise<ReflectionResult> {
 	const agenticResult: AgenticReflectionResult = await runAgenticReflection(env, storage);
 
-	// Write staged changes for human review
-	const pendingPath = await writeStagedReflection(storage, {
-		date,
-		summary: agenticResult.summary,
-		proposedEdits: agenticResult.proposedEdits,
-		autoAppliedFixes: agenticResult.autoAppliedFixes,
-		flaggedIssues: agenticResult.flaggedIssues,
-		quickScanIterations: agenticResult.quickScanIterations,
-		deepAnalysisIterations: agenticResult.deepAnalysisIterations,
-	});
+	const hasChanges =
+		agenticResult.proposedEdits.length > 0 || agenticResult.autoAppliedFixes.length > 0;
+
+	// Only write pending file if there are actual changes to review
+	let pendingPath: string | undefined;
+	if (agenticResult.proposedEdits.length > 0) {
+		pendingPath = await writeStagedReflection(storage, {
+			date,
+			summary: agenticResult.summary,
+			proposedEdits: agenticResult.proposedEdits,
+			autoAppliedFixes: agenticResult.autoAppliedFixes,
+			flaggedIssues: agenticResult.flaggedIssues,
+			quickScanIterations: agenticResult.quickScanIterations,
+			deepAnalysisIterations: agenticResult.deepAnalysisIterations,
+		});
+	}
 
 	// Update last reflection timestamp
 	await storage.write(
@@ -162,19 +174,26 @@ async function runAgenticReflectionFlow(
 		}),
 	);
 
-	const summaryParts = [agenticResult.summary];
-	if (agenticResult.autoAppliedFixes.length > 0) {
-		summaryParts.push(`Auto-applied ${agenticResult.autoAppliedFixes.length} fixes.`);
-	}
-	if (agenticResult.proposedEdits.length > 0) {
-		summaryParts.push(`${agenticResult.proposedEdits.length} changes proposed for review.`);
+	// Build a helpful summary
+	let summary: string;
+	if (!hasChanges) {
+		summary = "Memory looks good - no issues found.";
+	} else {
+		const parts: string[] = [];
+		if (agenticResult.autoAppliedFixes.length > 0) {
+			parts.push(`Auto-applied ${agenticResult.autoAppliedFixes.length} fixes`);
+		}
+		if (agenticResult.proposedEdits.length > 0) {
+			parts.push(`${agenticResult.proposedEdits.length} changes need review`);
+		}
+		summary = `${parts.join(". ")}.`;
 	}
 
 	return {
 		success: agenticResult.success,
 		date,
 		pendingPath,
-		summary: summaryParts.join(" "),
+		summary,
 		mode: "agentic",
 		autoApplied: agenticResult.autoAppliedFixes.length,
 		proposed: agenticResult.proposedEdits.length,

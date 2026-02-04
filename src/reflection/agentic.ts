@@ -150,6 +150,17 @@ async function runQuickScan(
 				tools: QUICK_SCAN_TOOLS,
 			});
 
+			// Debug logging
+			console.log(
+				JSON.stringify({
+					phase: "quick_scan",
+					iteration: iterations,
+					model,
+					response: result.response?.slice(0, 200),
+					toolCalls: result.toolCalls,
+				}),
+			);
+
 			// Add assistant response to history
 			if (result.response) {
 				messages.push({ role: "assistant", content: result.response });
@@ -158,6 +169,9 @@ async function runQuickScan(
 			// Check for tool calls
 			if (!result.toolCalls || result.toolCalls.length === 0) {
 				// No tool calls - consider it finished
+				console.log(
+					JSON.stringify({ phase: "quick_scan", event: "no_tool_calls", finishing: true }),
+				);
 				break;
 			}
 
@@ -230,6 +244,17 @@ async function runDeepAnalysis(
 				tools: REFLECTION_TOOLS,
 			});
 
+			// Debug logging
+			console.log(
+				JSON.stringify({
+					phase: "deep_analysis",
+					iteration: iterations,
+					model,
+					response: result.response?.slice(0, 200),
+					toolCalls: result.toolCalls,
+				}),
+			);
+
 			// Add assistant response to history
 			if (result.response) {
 				messages.push({ role: "assistant", content: result.response });
@@ -238,6 +263,9 @@ async function runDeepAnalysis(
 			// Check for tool calls
 			if (!result.toolCalls || result.toolCalls.length === 0) {
 				// No tool calls - extract summary from response
+				console.log(
+					JSON.stringify({ phase: "deep_analysis", event: "no_tool_calls", finishing: true }),
+				);
 				summary = result.response?.slice(0, 500) ?? "Deep analysis completed";
 				break;
 			}
