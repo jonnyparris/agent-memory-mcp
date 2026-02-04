@@ -7,6 +7,8 @@ import {
 	loadConversationIndex,
 } from "./conversations";
 import { executeCode } from "./execute";
+import { archiveReflection, listPendingReflections } from "./reflection/staging";
+import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { createR2Storage } from "./storage/r2";
 import { extractSnippet, truncate } from "./truncate";
@@ -622,5 +624,258 @@ export function createServer(env: Env): McpServer {
 		},
 	);
 
+	// ==================== Reflection Tools ====================
+
+	server.registerTool(
+		"list_pending_reflections",
+		{
+			description: "List pending reflection files awaiting review.",
+			inputSchema: {},
+		},
+		async () => {
+			try {
+				const pending = await listPendingReflections(storage);
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({
+								pending,
+								count: pending.length,
+								hint:
+									pending.length > 0
+										? "Use read to view details, apply_reflection_changes to apply proposed edits"
+										: "No pending reflections",
+							}),
+						},
+					],
+				};
+			} catch (e) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({ error: "List failed", details: String(e) }),
+						},
+					],
+					isError: true,
+				};
+			}
+		},
+	);
+
+	server.registerTool(
+		"apply_reflection_changes",
+		{
+			description:
+				"Apply proposed changes from a reflection. Reads the pending file, applies specified edits, and optionally archives the reflection.",
+			inputSchema: {
+				date: z.string().describe("Date of the reflection (YYYY-MM-DD)"),
+				editIndices: z
+					.array(z.number())
+					.optional()
+					.describe("Which edits to apply (1-indexed). Omit to apply all."),
+				archive: z
+					.boolean()
+					.optional()
+					.default(true)
+					.describe("Archive the reflection after applying"),
+			},
+		},
+		async ({ date, editIndices, archive }) => {
+			try {
+				const pendingPath = `memory/reflections/pending/${date}.md`;
+				const file = await storage.read(pendingPath);
+
+				if (!file) {
+					return {
+						content: [
+							{ type: "text", text: JSON.stringify({ error: "Reflection not found", date }) },
+						],
+						isError: true,
+					};
+				}
+
+				// Parse proposed edits from the markdown
+				const edits = parseProposedEdits(file.content);
+
+				if (edits.length === 0) {
+					// No edits to apply, just archive if requested
+					if (archive) {
+						await archiveReflection(storage, pendingPath);
+					}
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									success: true,
+									message: "No proposed edits to apply",
+									archived: archive,
+								}),
+							},
+						],
+					};
+				}
+
+				// Filter to requested indices (1-indexed)
+				const toApply = editIndices ? edits.filter((_, i) => editIndices.includes(i + 1)) : edits;
+
+				// Apply each edit
+				const results: Array<{ path: string; action: string; success: boolean; error?: string }> =
+					[];
+
+				for (const edit of toApply) {
+					try {
+						switch (edit.action) {
+							case "replace":
+							case "create":
+								if (edit.content) {
+									await storage.write(edit.path, edit.content);
+									// Update search index
+									const indexId = env.MEMORY_INDEX.idFromName("default");
+									const index = env.MEMORY_INDEX.get(indexId);
+									await index.fetch(
+										new Request("http://internal/update", {
+											method: "POST",
+											body: JSON.stringify({ path: edit.path, content: edit.content }),
+										}),
+									);
+								}
+								results.push({ path: edit.path, action: edit.action, success: true });
+								break;
+
+							case "append":
+								if (edit.content) {
+									const existing = await storage.read(edit.path);
+									const newContent = existing
+										? `${existing.content}\n${edit.content}`
+										: edit.content;
+									await storage.write(edit.path, newContent);
+								}
+								results.push({ path: edit.path, action: edit.action, success: true });
+								break;
+
+							case "delete":
+								await storage.delete(edit.path);
+								results.push({ path: edit.path, action: edit.action, success: true });
+								break;
+						}
+					} catch (e) {
+						results.push({
+							path: edit.path,
+							action: edit.action,
+							success: false,
+							error: String(e),
+						});
+					}
+				}
+
+				// Archive if requested and all succeeded
+				const allSucceeded = results.every((r) => r.success);
+				let archived = false;
+				if (archive && allSucceeded) {
+					await archiveReflection(storage, pendingPath);
+					archived = true;
+				}
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({
+								success: allSucceeded,
+								applied: results.filter((r) => r.success).length,
+								failed: results.filter((r) => !r.success).length,
+								results,
+								archived,
+							}),
+						},
+					],
+				};
+			} catch (e) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({ error: "Apply failed", details: String(e) }),
+						},
+					],
+					isError: true,
+				};
+			}
+		},
+	);
+
+	server.registerTool(
+		"archive_reflection",
+		{
+			description: "Archive a pending reflection without applying changes (mark as reviewed).",
+			inputSchema: {
+				date: z.string().describe("Date of the reflection (YYYY-MM-DD)"),
+			},
+		},
+		async ({ date }) => {
+			try {
+				const pendingPath = `memory/reflections/pending/${date}.md`;
+				const archivePath = await archiveReflection(storage, pendingPath);
+
+				if (!archivePath) {
+					return {
+						content: [
+							{ type: "text", text: JSON.stringify({ error: "Reflection not found", date }) },
+						],
+						isError: true,
+					};
+				}
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({
+								success: true,
+								archivedTo: archivePath,
+							}),
+						},
+					],
+				};
+			} catch (e) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({ error: "Archive failed", details: String(e) }),
+						},
+					],
+					isError: true,
+				};
+			}
+		},
+	);
+
 	return server;
+}
+
+/**
+ * Parse proposed edits from a reflection markdown file
+ */
+function parseProposedEdits(content: string): ProposedEdit[] {
+	const edits: ProposedEdit[] = [];
+
+	// Match sections like: ### 1. REPLACE: memory/learnings.md
+	const editPattern =
+		/###\s*\d+\.\s*(REPLACE|APPEND|DELETE|CREATE):\s*(\S+)\s*\n\n\*\*Reason:\*\*\s*([^\n]+)\n(?:\n\*\*Content:\*\*\n```\n([\s\S]*?)\n```)?/g;
+
+	for (let match = editPattern.exec(content); match !== null; match = editPattern.exec(content)) {
+		const [, action, path, reason, editContent] = match;
+		edits.push({
+			path,
+			action: action.toLowerCase() as ProposedEdit["action"],
+			reason,
+			content: editContent,
+		});
+	}
+
+	return edits;
 }

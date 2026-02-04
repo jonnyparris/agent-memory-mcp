@@ -29,6 +29,19 @@ export default {
 			});
 		}
 
+		// Manual reflection trigger (requires auth)
+		if (url.pathname === "/reflect" && request.method === "POST") {
+			const authResult = validateAuth(request, env);
+			if (!authResult.authorized) {
+				return unauthorizedResponse(authResult.error!);
+			}
+
+			const result = await runReflection(env);
+			return new Response(JSON.stringify(result, null, 2), {
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
 		// MCP endpoint
 		if (url.pathname === "/mcp") {
 			// Validate auth
