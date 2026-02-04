@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { unauthorizedResponse, validateAuth } from "./auth";
+import {
+	expandConversation,
+	getConversationStats,
+	indexSessions,
+	loadConversationIndex,
+} from "./conversations";
 import { executeCode } from "./execute";
 import { runReflection } from "./reflection";
+import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { createR2Storage } from "./storage/r2";
 import { extractSnippet, truncate } from "./truncate";
 import type { Env } from "./types";
@@ -258,6 +265,366 @@ export default {
 					};
 
 					return executeCode(code, memoryApi);
+				},
+			},
+			// ==================== Conversation Tools ====================
+			{
+				name: "search_conversations",
+				description:
+					"Search past conversations for similar problems/solutions. Uses time-weighted scoring (recent = higher).",
+				inputSchema: z.object({
+					query: z.string().describe("What to search for, e.g., 'TypeScript errors', 'API design'"),
+					limit: z.number().optional().default(5).describe("Max results to return"),
+				}),
+				handler: async (args) => {
+					const { query, limit } = args as { query: string; limit?: number };
+					try {
+						const conversationIndex = await loadConversationIndex(storage);
+						if (conversationIndex.exchanges.length === 0) {
+							return {
+								content: [
+									{
+										type: "text",
+										text: JSON.stringify({
+											results: [],
+											message: "No conversations indexed yet. Use index_conversations to sync.",
+										}),
+									},
+								],
+							};
+						}
+
+						// Use the main search index with conversation prefix filter
+						const indexId = env.MEMORY_INDEX.idFromName("default");
+						const index = env.MEMORY_INDEX.get(indexId);
+						const response = await index.fetch(
+							new Request("http://internal/search", {
+								method: "POST",
+								body: JSON.stringify({ query, limit: (limit ?? 5) * 2, timeWeight: true }),
+							}),
+						);
+						const rawResults = (await response.json()) as Array<{ id: string; score: number }>;
+
+						// Filter to conversation results and enrich
+						const conversationResults = rawResults
+							.filter((r) => r.id.startsWith("conversations/exchanges/"))
+							.slice(0, limit ?? 5)
+							.map((r) => {
+								const exchangeId = r.id.replace("conversations/exchanges/", "").replace(".txt", "");
+								const exchange = conversationIndex.exchanges.find((e) => e.id === exchangeId);
+								return {
+									id: exchangeId,
+									score: r.score,
+									project: exchange?.project,
+									userPrompt: exchange?.userPrompt?.slice(0, 200),
+									timestamp: exchange?.timestamp,
+									sessionId: exchange?.sessionId,
+								};
+							});
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({
+										results: conversationResults,
+										hint: "Use expand_conversation with sessionId to see full context",
+									}),
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "Search failed", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
+				},
+			},
+			{
+				name: "index_conversations",
+				description:
+					"Index conversation sessions from a sync script. Called by client-side scripts, not directly.",
+				inputSchema: z.object({
+					sessions: z
+						.array(
+							z.object({
+								sessionId: z.string(),
+								project: z.string(),
+								data: z.record(z.unknown()),
+							}),
+						)
+						.describe("Array of session objects to index"),
+				}),
+				handler: async (args) => {
+					const { sessions } = args as {
+						sessions: Array<{ sessionId: string; project: string; data: Record<string, unknown> }>;
+					};
+					try {
+						// Index sessions and update embeddings for each exchange
+						const result = await indexSessions(
+							storage,
+							sessions.map((s) => ({
+								sessionId: s.sessionId,
+								project: s.project,
+								// eslint-disable-next-line @typescript-eslint/no-explicit-any
+								data: s.data as any,
+							})),
+						);
+
+						// Update embeddings for new/changed exchanges
+						const conversationIndex = await loadConversationIndex(storage);
+						const indexId = env.MEMORY_INDEX.idFromName("default");
+						const index = env.MEMORY_INDEX.get(indexId);
+
+						let indexed = 0;
+						for (const exchange of conversationIndex.exchanges) {
+							// Index user prompt for search
+							const content = `[${exchange.project}] ${exchange.userPrompt}\n\nResponse: ${exchange.assistantResponse}`;
+							const path = `conversations/exchanges/${exchange.id}.txt`;
+
+							await index.fetch(
+								new Request("http://internal/update", {
+									method: "POST",
+									body: JSON.stringify({ path, content }),
+								}),
+							);
+							indexed++;
+						}
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({
+										success: true,
+										added: result.added,
+										updated: result.updated,
+										unchanged: result.unchanged,
+										totalIndexed: indexed,
+									}),
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "Indexing failed", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
+				},
+			},
+			{
+				name: "expand_conversation",
+				description: "Load full context from a past conversation session.",
+				inputSchema: z.object({
+					sessionId: z.string().describe("Session ID from search results"),
+					exchangeId: z.string().optional().describe("Specific exchange ID to center on"),
+				}),
+				handler: async (args) => {
+					const { sessionId, exchangeId } = args as { sessionId: string; exchangeId?: string };
+					try {
+						const result = await expandConversation(storage, sessionId, exchangeId);
+						if (!result) {
+							return {
+								content: [{ type: "text", text: JSON.stringify({ error: "Session not found" }) }],
+								isError: true,
+							};
+						}
+						return {
+							content: [{ type: "text", text: JSON.stringify(result) }],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "Expand failed", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
+				},
+			},
+			{
+				name: "conversation_stats",
+				description: "Get statistics about indexed conversations.",
+				inputSchema: z.object({}),
+				handler: async () => {
+					try {
+						const stats = await getConversationStats(storage);
+						return {
+							content: [{ type: "text", text: JSON.stringify(stats) }],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "Stats failed", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
+				},
+			},
+			// ==================== Reminder Tools ====================
+			{
+				name: "schedule_reminder",
+				description:
+					"Create a reminder. Use type 'cron' for recurring (e.g., '0 9 * * *' for 9am UTC daily) or 'once' for one-shot (ISO datetime).",
+				inputSchema: z.object({
+					id: z.string().describe("Unique identifier for this reminder"),
+					type: z.enum(["cron", "once"]).describe("'cron' for recurring, 'once' for one-shot"),
+					expression: z
+						.string()
+						.describe("Cron expression (e.g., '0 9 * * *') or ISO datetime for one-shot"),
+					description: z.string().describe("What this reminder is for"),
+					payload: z.string().describe("Message/instructions when reminder fires"),
+					model: z.string().optional().describe("Optional model hint for client"),
+				}),
+				handler: async (args) => {
+					const { id, type, expression, description, payload, model } = args as {
+						id: string;
+						type: "cron" | "once";
+						expression: string;
+						description: string;
+						payload: string;
+						model?: string;
+					};
+					try {
+						const reminder = await scheduleReminder(storage, {
+							id,
+							type,
+							expression,
+							description,
+							payload,
+							model,
+						});
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ success: true, reminder }),
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "Failed to schedule", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
+				},
+			},
+			{
+				name: "list_reminders",
+				description: "List all scheduled reminders.",
+				inputSchema: z.object({}),
+				handler: async () => {
+					try {
+						const reminders = await listReminders(storage);
+						return {
+							content: [{ type: "text", text: JSON.stringify({ reminders }) }],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "List failed", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
+				},
+			},
+			{
+				name: "remove_reminder",
+				description: "Remove a scheduled reminder.",
+				inputSchema: z.object({
+					id: z.string().describe("ID of the reminder to remove"),
+				}),
+				handler: async (args) => {
+					const { id } = args as { id: string };
+					try {
+						const removed = await removeReminder(storage, id);
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({
+										success: removed,
+										message: removed ? "Removed" : "Not found",
+									}),
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "Remove failed", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
+				},
+			},
+			{
+				name: "check_reminders",
+				description:
+					"Check for fired reminders. Call on startup to see if any scheduled tasks need attention.",
+				inputSchema: z.object({}),
+				handler: async () => {
+					try {
+						const fired = await checkReminders(storage);
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({
+										fired,
+										count: fired.length,
+										hint:
+											fired.length > 0
+												? "Process these reminders based on their payload"
+												: "No reminders to process",
+									}),
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({ error: "Check failed", details: String(e) }),
+								},
+							],
+							isError: true,
+						};
+					}
 				},
 			},
 		];

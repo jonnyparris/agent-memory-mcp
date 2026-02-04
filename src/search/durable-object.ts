@@ -116,15 +116,60 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 
 	private async handleSearch(request: Request): Promise<Response> {
 		try {
-			const { query, limit = 5 } = (await request.json()) as { query: string; limit?: number };
+			const {
+				query,
+				limit = 5,
+				timeWeight = true,
+			} = (await request.json()) as {
+				query: string;
+				limit?: number;
+				timeWeight?: boolean;
+			};
 
 			// Generate query embedding
 			const { vector } = await generateEmbedding(this.env.AI, query);
 
-			// Search HNSW index
-			const results = this.index!.search(vector, limit);
+			// Search HNSW index - get more results for time-weighted reranking
+			const rawResults = this.index!.search(vector, timeWeight ? limit * 3 : limit);
 
-			return new Response(JSON.stringify(results), {
+			if (!timeWeight) {
+				return new Response(JSON.stringify(rawResults), {
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+
+			// Apply time-weighted scoring with exponential decay (30-day half-life)
+			const now = Date.now();
+			const halfLifeMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+			const rerankedResults = rawResults
+				.map((r) => {
+					// Get updated_at from SQLite
+					const row = [
+						...this.ctx.storage.sql.exec<{ updated_at: number }>(
+							"SELECT updated_at FROM memories WHERE path = ?",
+							r.id,
+						),
+					][0];
+					const updatedAt = row?.updated_at ?? now;
+					const ageMs = now - updatedAt;
+
+					// Exponential decay: weight = 0.5^(age/halfLife)
+					const timeDecay = 0.5 ** (ageMs / halfLifeMs);
+					const adjustedScore = r.score * (0.3 + 0.7 * timeDecay); // 30% base + 70% time-weighted
+
+					return {
+						id: r.id,
+						score: r.score,
+						adjustedScore,
+						updatedAt,
+					};
+				})
+				.sort((a, b) => b.adjustedScore - a.adjustedScore)
+				.slice(0, limit)
+				.map((r) => ({ id: r.id, score: r.adjustedScore }));
+
+			return new Response(JSON.stringify(rerankedResults), {
 				headers: { "Content-Type": "application/json" },
 			});
 		} catch (e) {
