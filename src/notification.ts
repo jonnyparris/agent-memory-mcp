@@ -18,6 +18,8 @@ export interface ChatCard {
 	};
 	sections: Array<{
 		header?: string;
+		collapsible?: boolean;
+		uncollapsibleWidgetsCount?: number;
 		widgets: Array<{
 			textParagraph?: { text: string };
 			buttons?: Array<{
@@ -28,6 +30,13 @@ export interface ChatCard {
 			}>;
 		}>;
 	}>;
+}
+
+/** Describes a single change applied during reflection */
+export interface ReflectionChange {
+	path: string;
+	action: string;
+	reason: string;
 }
 
 export interface NotificationOptions {
@@ -106,9 +115,11 @@ export async function sendChatNotification(
 export function buildReflectionCard(
 	date: string,
 	summary: string,
-	pendingPath: string,
-	proposedChanges?: number,
-	autoApplied?: number,
+	options?: {
+		quickFixes?: ReflectionChange[];
+		edits?: ReflectionChange[];
+		failedEdits?: string[];
+	},
 ): ChatCard {
 	const sections: ChatCard["sections"] = [
 		{
@@ -117,40 +128,75 @@ export function buildReflectionCard(
 		},
 	];
 
-	// Add statistics section if we have counts
-	if (proposedChanges !== undefined || autoApplied !== undefined) {
-		const statsLines: string[] = [];
-		if (autoApplied !== undefined && autoApplied > 0) {
-			statsLines.push(`<b>${autoApplied}</b> low-risk fixes auto-applied`);
-		}
-		if (proposedChanges !== undefined && proposedChanges > 0) {
-			statsLines.push(`<b>${proposedChanges}</b> changes staged for review`);
-		}
+	const quickFixes = options?.quickFixes ?? [];
+	const edits = options?.edits ?? [];
+	const failedEdits = options?.failedEdits ?? [];
 
-		if (statsLines.length > 0) {
-			sections.push({
-				header: "Changes",
-				widgets: [{ textParagraph: { text: statsLines.join("\n") } }],
-			});
-		}
+	// Quick fixes section (Phase A auto-applied)
+	if (quickFixes.length > 0) {
+		const fixLines = quickFixes.map((f) => `- <b>${f.path}</b> (${f.action}): ${f.reason}`);
+		sections.push({
+			header: `Quick Fixes (${quickFixes.length})`,
+			collapsible: quickFixes.length > 3,
+			uncollapsibleWidgetsCount: 1,
+			widgets: [
+				{
+					textParagraph: {
+						text: fixLines.join("\n"),
+					},
+				},
+			],
+		});
 	}
 
-	// Add next steps
-	sections.push({
-		header: "Next Steps",
-		widgets: [
-			{
-				textParagraph: {
-					text: `Review pending changes at: <code>${pendingPath}</code>\n\nApprove or reject changes to update the memory.`,
+	// Edits section (Phase B proposed + auto-applied)
+	if (edits.length > 0) {
+		const editLines = edits.map((e) => `- <b>${e.path}</b> (${e.action}): ${e.reason}`);
+		sections.push({
+			header: `Edits Applied (${edits.length})`,
+			collapsible: edits.length > 3,
+			uncollapsibleWidgetsCount: 1,
+			widgets: [
+				{
+					textParagraph: {
+						text: editLines.join("\n"),
+					},
 				},
-			},
-		],
-	});
+			],
+		});
+	}
+
+	// Failed edits section
+	if (failedEdits.length > 0) {
+		sections.push({
+			header: `Failed (${failedEdits.length})`,
+			widgets: [
+				{
+					textParagraph: {
+						text: failedEdits.map((f) => `- ${f}`).join("\n"),
+					},
+				},
+			],
+		});
+	}
+
+	// If nothing happened, say so
+	if (quickFixes.length === 0 && edits.length === 0) {
+		sections.push({
+			widgets: [
+				{
+					textParagraph: {
+						text: "No changes made — memory looks good.",
+					},
+				},
+			],
+		});
+	}
 
 	return {
 		header: {
-			title: "Agent Memory Reflection Complete",
-			subtitle: `Daily reflection for ${date}`,
+			title: "Memory Reflection",
+			subtitle: date,
 		},
 		sections,
 	};

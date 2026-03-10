@@ -11,9 +11,13 @@
  */
 
 import { WorkersAIProvider } from "./llm/workers-ai";
-import { buildReflectionCard, sendChatNotification } from "./notification";
+import { type ReflectionChange, buildReflectionCard, sendChatNotification } from "./notification";
 import { type AgenticReflectionResult, runAgenticReflection } from "./reflection/agentic";
-import { writeStagedReflection } from "./reflection/staging";
+import {
+	type StagedReflection,
+	archiveReflection,
+	writeStagedReflection,
+} from "./reflection/staging";
 import type { R2Storage } from "./storage/r2";
 import { createR2Storage } from "./storage/r2";
 import type { Env, MemoryFileMetadata } from "./types";
@@ -50,6 +54,12 @@ export interface ReflectionResult {
 	mode?: "agentic" | "legacy";
 	autoApplied?: number;
 	proposed?: number;
+	/** Detailed list of quick fixes applied in Phase A */
+	quickFixes?: ReflectionChange[];
+	/** Detailed list of edits applied in Phase B */
+	edits?: ReflectionChange[];
+	/** List of edits that failed to apply */
+	failedEdits?: string[];
 }
 
 /**
@@ -84,20 +94,16 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 			}),
 		);
 
-		// Send notification only if there's something actionable (if webhook configured)
-		const hasActionableChanges = (result.proposed ?? 0) > 0 || (result.autoApplied ?? 0) > 0;
-		if (
-			hasActionableChanges &&
-			env.CHAT_WEBHOOK_AUTH_KEY &&
-			env.CHAT_WEBHOOK_URL &&
-			env.CHAT_WEBHOOK_SPACE_ID
-		) {
+		// Always send a DM summary (if webhook configured)
+		if (env.CHAT_WEBHOOK_AUTH_KEY && env.CHAT_WEBHOOK_URL && env.CHAT_WEBHOOK_SPACE_ID) {
 			const card = buildReflectionCard(
 				date,
-				result.summary ?? "Reflection complete",
-				result.pendingPath ?? "",
-				result.proposed,
-				result.autoApplied,
+				result.summary ?? "Reflection complete — no issues found.",
+				{
+					quickFixes: result.quickFixes,
+					edits: result.edits,
+					failedEdits: result.failedEdits,
+				},
 			);
 			await sendChatNotification(env.CHAT_WEBHOOK_AUTH_KEY, result.summary ?? "", {
 				webhookUrl: env.CHAT_WEBHOOK_URL,
@@ -151,19 +157,70 @@ async function runAgenticReflectionFlow(
 	const hasChanges =
 		agenticResult.proposedEdits.length > 0 || agenticResult.autoAppliedFixes.length > 0;
 
-	// Only write pending file if there are actual changes to review
-	let pendingPath: string | undefined;
-	if (agenticResult.proposedEdits.length > 0) {
-		pendingPath = await writeStagedReflection(storage, {
-			date,
-			summary: agenticResult.summary,
-			proposedEdits: agenticResult.proposedEdits,
-			autoAppliedFixes: agenticResult.autoAppliedFixes,
-			flaggedIssues: agenticResult.flaggedIssues,
-			quickScanIterations: agenticResult.quickScanIterations,
-			deepAnalysisIterations: agenticResult.deepAnalysisIterations,
-		});
+	// Auto-apply all proposed edits directly (no staging for review)
+	const appliedEdits: ReflectionChange[] = [];
+	const failedEdits: string[] = [];
+
+	for (const edit of agenticResult.proposedEdits) {
+		try {
+			switch (edit.action) {
+				case "replace":
+				case "create":
+					if (edit.content) {
+						await storage.write(edit.path, edit.content);
+					}
+					break;
+				case "append":
+					if (edit.content) {
+						const existing = await storage.read(edit.path);
+						const newContent = existing ? `${existing.content}\n${edit.content}` : edit.content;
+						await storage.write(edit.path, newContent);
+					}
+					break;
+				case "delete":
+					await storage.delete(edit.path);
+					break;
+			}
+			appliedEdits.push({ path: edit.path, action: edit.action, reason: edit.reason });
+			console.log(
+				JSON.stringify({ event: "auto_applied_edit", path: edit.path, action: edit.action }),
+			);
+		} catch (e) {
+			failedEdits.push(`${edit.action}: ${edit.path}`);
+			console.error(
+				JSON.stringify({
+					event: "auto_apply_edit_failed",
+					path: edit.path,
+					action: edit.action,
+					error: e instanceof Error ? e.message : String(e),
+				}),
+			);
+		}
 	}
+
+	// Write reflection record to archive (audit trail of what was changed and why)
+	const stagedReflection: StagedReflection = {
+		date,
+		summary: agenticResult.summary || "No summary provided.",
+		proposedEdits: agenticResult.proposedEdits,
+		autoAppliedFixes: agenticResult.autoAppliedFixes,
+		flaggedIssues: agenticResult.flaggedIssues,
+		quickScanIterations: agenticResult.quickScanIterations,
+		deepAnalysisIterations: agenticResult.deepAnalysisIterations,
+	};
+	// Write to pending first, then archive (reuses existing staging logic)
+	const pendingPath = await writeStagedReflection(storage, stagedReflection);
+	const archivePath = await archiveReflection(storage, pendingPath);
+	console.log(
+		JSON.stringify({
+			event: "reflection_archived",
+			date,
+			archivePath,
+			autoApplied: agenticResult.autoAppliedFixes.length,
+			edits: appliedEdits.length,
+			failedEdits: failedEdits.length,
+		}),
+	);
 
 	// Update last reflection timestamp
 	await storage.write(
@@ -174,29 +231,44 @@ async function runAgenticReflectionFlow(
 		}),
 	);
 
-	// Build a helpful summary
+	// Build quick fixes list from Phase A auto-applied fixes
+	const quickFixes: ReflectionChange[] = agenticResult.autoAppliedFixes.map((f) => ({
+		path: f.path,
+		action: f.fixType,
+		reason: f.reason,
+	}));
+
+	// Build a detailed summary
 	let summary: string;
 	if (!hasChanges) {
-		summary = "Memory looks good - no issues found.";
+		summary = "Memory looks good — no issues found.";
 	} else {
 		const parts: string[] = [];
-		if (agenticResult.autoAppliedFixes.length > 0) {
-			parts.push(`Auto-applied ${agenticResult.autoAppliedFixes.length} fixes`);
+		if (quickFixes.length > 0) {
+			parts.push(`${quickFixes.length} quick fixes`);
 		}
-		if (agenticResult.proposedEdits.length > 0) {
-			parts.push(`${agenticResult.proposedEdits.length} changes need review`);
+		if (appliedEdits.length > 0) {
+			parts.push(`${appliedEdits.length} edits`);
 		}
-		summary = `${parts.join(". ")}.`;
+		if (failedEdits.length > 0) {
+			parts.push(`${failedEdits.length} failed`);
+		}
+		summary = `Auto-applied ${parts.join(", ")}.`;
+		if (agenticResult.summary) {
+			summary += `\n\n${agenticResult.summary}`;
+		}
 	}
 
 	return {
 		success: agenticResult.success,
 		date,
-		pendingPath,
 		summary,
 		mode: "agentic",
-		autoApplied: agenticResult.autoAppliedFixes.length,
-		proposed: agenticResult.proposedEdits.length,
+		autoApplied: quickFixes.length + appliedEdits.length,
+		proposed: 0, // Nothing left pending — all auto-applied
+		quickFixes,
+		edits: appliedEdits,
+		failedEdits: failedEdits.length > 0 ? failedEdits : undefined,
 		error: agenticResult.error,
 	};
 }
