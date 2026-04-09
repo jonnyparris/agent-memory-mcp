@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" fill="none">
+  <defs>
+    <filter id="shadow3" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" rx="16" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="400" y="40" text-anchor="middle" fill="#f8fafc" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="700">What Can You Do With It?</text>
+  <text x="400" y="60" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="13">Real examples of AI memory in action</text>
+
+  <!-- Row 1 -->
+  <!-- Card 1: Remember preferences -->
+  <g filter="url(#shadow3)">
+    <rect x="30" y="85" width="235" height="165" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <circle cx="58" cy="113" r="18" fill="#172554"/>
+    <text x="58" y="119" text-anchor="middle" fill="#60a5fa" font-family="system-ui, sans-serif" font-size="18">&#x1f9e0;</text>
+    <text x="84" y="118" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Remember Preferences</text>
+    <text x="42" y="142" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Use Tailwind, not CSS modules"</text>
+    <text x="42" y="157" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Always use pnpm, not npm"</text>
+    <text x="42" y="172" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"I prefer vitest over jest"</text>
+    <rect x="42" y="190" width="211" height="44" rx="6" fill="#0f172a"/>
+    <text x="148" y="210" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">Tell your AI once. It remembers</text>
+    <text x="148" y="225" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">across every future session.</text>
+  </g>
+
+  <!-- Card 2: Track learnings -->
+  <g filter="url(#shadow3)">
+    <rect x="283" y="85" width="235" height="165" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <circle cx="311" cy="113" r="18" fill="#1a2e05"/>
+    <text x="311" y="119" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="18">&#x1f4da;</text>
+    <text x="337" y="118" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Track Learnings</text>
+    <text x="295" y="142" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"git clean -fd deletes files"</text>
+    <text x="295" y="157" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Use --body-file not --body"</text>
+    <text x="295" y="172" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Port 8787 is used by wrangler"</text>
+    <rect x="295" y="190" width="211" height="44" rx="6" fill="#0f172a"/>
+    <text x="401" y="210" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">Your AI won't make the same</text>
+    <text x="401" y="225" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">mistake twice.</text>
+  </g>
+
+  <!-- Card 3: Know your team -->
+  <g filter="url(#shadow3)">
+    <rect x="536" y="85" width="235" height="165" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <circle cx="564" cy="113" r="18" fill="#2e1065"/>
+    <text x="564" y="119" text-anchor="middle" fill="#a78bfa" font-family="system-ui, sans-serif" font-size="18">&#x1f465;</text>
+    <text x="590" y="118" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Know Your Team</text>
+    <text x="548" y="142" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Alice owns auth service"</text>
+    <text x="548" y="157" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Bob is on PTO until Friday"</text>
+    <text x="548" y="172" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Carol prefers async reviews"</text>
+    <rect x="548" y="190" width="211" height="44" rx="6" fill="#0f172a"/>
+    <text x="654" y="210" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">Your AI knows who to ask</text>
+    <text x="654" y="225" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">and when they're available.</text>
+  </g>
+
+  <!-- Row 2 -->
+  <!-- Card 4: Search past conversations -->
+  <g filter="url(#shadow3)">
+    <rect x="30" y="272" width="235" height="165" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <circle cx="58" cy="300" r="18" fill="#422006"/>
+    <text x="58" y="306" text-anchor="middle" fill="#fb923c" font-family="system-ui, sans-serif" font-size="18">&#x1f50d;</text>
+    <text x="84" y="305" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Search Past Sessions</text>
+    <text x="42" y="328" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"How did I fix that CORS bug?"</text>
+    <text x="42" y="343" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"What did we decide about</text>
+    <text x="42" y="358" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11"> the database schema?"</text>
+    <rect x="42" y="377" width="211" height="44" rx="6" fill="#0f172a"/>
+    <text x="148" y="397" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">Index past conversations and</text>
+    <text x="148" y="412" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">search them by meaning.</text>
+  </g>
+
+  <!-- Card 5: Project context -->
+  <g filter="url(#shadow3)">
+    <rect x="283" y="272" width="235" height="165" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <circle cx="311" cy="300" r="18" fill="#083344"/>
+    <text x="311" y="306" text-anchor="middle" fill="#22d3ee" font-family="system-ui, sans-serif" font-size="18">&#x1f4cb;</text>
+    <text x="337" y="305" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Project Context</text>
+    <text x="295" y="328" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"API uses REST, not GraphQL"</text>
+    <text x="295" y="343" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Deploy to staging first"</text>
+    <text x="295" y="358" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">"Tests must pass before merge"</text>
+    <rect x="295" y="377" width="211" height="44" rx="6" fill="#0f172a"/>
+    <text x="401" y="397" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">Every AI session starts with</text>
+    <text x="401" y="412" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">full project knowledge.</text>
+  </g>
+
+  <!-- Card 6: Self-improving -->
+  <g filter="url(#shadow3)">
+    <rect x="536" y="272" width="235" height="165" rx="12" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <circle cx="564" cy="300" r="18" fill="#3b0764"/>
+    <text x="564" y="306" text-anchor="middle" fill="#e879f9" font-family="system-ui, sans-serif" font-size="18">&#x2728;</text>
+    <text x="590" y="305" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Self-Improving</text>
+    <text x="548" y="328" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">Daily automated reflection</text>
+    <text x="548" y="343" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">finds typos, contradictions,</text>
+    <text x="548" y="358" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">and outdated information.</text>
+    <rect x="548" y="377" width="211" height="44" rx="6" fill="#0f172a"/>
+    <text x="654" y="397" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">Your memory stays clean</text>
+    <text x="654" y="412" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="10">and up to date automatically.</text>
+  </g>
+
+  <!-- Bottom tagline -->
+  <text x="400" y="462" text-anchor="middle" fill="#475569" font-family="system-ui, sans-serif" font-size="11">Your AI becomes more useful the longer you use it -- because it actually remembers.</text>
+</svg>

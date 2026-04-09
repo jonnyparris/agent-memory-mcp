@@ -1,20 +1,81 @@
 # agent-memory-mcp
 
-A self-hostable MCP server for AI agent memory, built on Cloudflare Workers + R2 + Durable Objects.
+**Give your AI coding assistant a long-term memory.**
 
-Provides semantic search, file versioning, and codemode queries for personal AI agent memory systems.
+AI assistants like Claude Code, Cursor, and OpenCode forget everything between sessions. This fixes that. `agent-memory-mcp` is a small server you deploy to your own Cloudflare account that stores memories, searches them by meaning, and keeps them organized -- so your AI gets smarter the longer you use it.
 
-## Features
+It runs entirely on Cloudflare's free tier. Your data never leaves your account.
 
-- **Semantic Search**: Find memories by meaning, not just keywords
-- **File Versioning**: Git-like history for all memory files (via R2 versioning)
-- **Codemode Execution**: Run JavaScript against your memories for complex queries
-- **Self-Hosted**: Your data stays on your Cloudflare account
-- **Free Tier Friendly**: Runs entirely within Cloudflare's free tier for personal use
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jonnyparris/agent-memory-mcp)
 
-## Quick Start
+---
 
-### 1. Clone and Deploy
+## What can you do with it?
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/use-cases.svg">
+  <img alt="Use cases: remember preferences, track learnings, know your team, search past sessions, project context, self-improving memory" src="docs/use-cases.svg" width="100%">
+</picture>
+
+**Some real examples:**
+
+- **"Always use pnpm, not npm"** -- Tell your AI once. It remembers in every future session.
+- **"How did I fix that CORS bug last week?"** -- Search past conversations by meaning, not keywords.
+- **"Alice owns the auth service"** -- Your AI knows who to ask about what.
+- **"We decided to use REST, not GraphQL"** -- Project decisions persist across sessions.
+- **"Port 8787 is already used by wrangler"** -- Your AI won't make the same mistake twice.
+
+---
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works.svg">
+  <img alt="How it works: Write, Store, Index, Search" src="docs/how-it-works.svg" width="100%">
+</picture>
+
+1. **Write** -- Your AI saves a note (a preference, a lesson, a decision).
+2. **Store** -- The file is saved to R2 with full version history. You can roll back any change.
+3. **Index** -- Workers AI turns the text into a vector embedding and adds it to a searchable index.
+4. **Search** -- Later, your AI (or you) can find that memory by asking a question in plain English. Semantic search matches by meaning, not exact words.
+
+Recent memories rank higher than old ones automatically.
+
+---
+
+## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture.svg">
+  <img alt="Architecture diagram showing AI assistants connecting to a Cloudflare Worker backed by R2, Durable Objects, and Workers AI" src="docs/architecture.svg" width="100%">
+</picture>
+
+Three Cloudflare services, one Worker:
+
+| Component | What it does |
+|-----------|-------------|
+| **R2** | Stores your memory files with version history |
+| **Durable Object** | Runs the HNSW vector index + SQLite for semantic search |
+| **Workers AI** | Generates embeddings (bge-m3) and powers the daily reflection |
+
+---
+
+## Quick start
+
+### Option A: One-click deploy
+
+Click the button, follow the prompts, and you'll have a running server in under 2 minutes:
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jonnyparris/agent-memory-mcp)
+
+After deploying, set your auth token:
+
+```bash
+npx wrangler secret put MEMORY_AUTH_TOKEN
+# Enter a secure random token when prompted
+```
+
+### Option B: Clone and deploy manually
 
 ```bash
 git clone https://github.com/jonnyparris/agent-memory-mcp.git
@@ -32,9 +93,28 @@ npx wrangler secret put MEMORY_AUTH_TOKEN
 npm run deploy
 ```
 
-### 2. Configure Your AI Assistant
+---
 
-#### OpenCode
+## Connect your AI assistant
+
+Once deployed, connect your AI assistant to the server. Replace `YOUR_SUBDOMAIN` with your Cloudflare Workers subdomain (find it in the Cloudflare dashboard under Workers & Pages).
+
+### Claude Code
+
+```bash
+export MEMORY_AUTH_TOKEN="your-secret-token"
+claude mcp add --transport http agent-memory \
+  https://agent-memory-mcp.YOUR_SUBDOMAIN.workers.dev/mcp \
+  --header "Authorization: Bearer $MEMORY_AUTH_TOKEN"
+```
+
+### Cursor
+
+Go to **Settings > MCP Servers > Add**:
+- **URL:** `https://agent-memory-mcp.YOUR_SUBDOMAIN.workers.dev/mcp`
+- **Headers:** `Authorization: Bearer YOUR_TOKEN`
+
+### OpenCode
 
 Add to `.opencode/opencode.json`:
 
@@ -52,290 +132,135 @@ Add to `.opencode/opencode.json`:
 }
 ```
 
-#### Claude Code
+### Any MCP-compatible client
 
-```bash
-export MEMORY_AUTH_TOKEN="your-secret-token"
-claude mcp add --transport http agent-memory \
-  https://agent-memory-mcp.YOUR_SUBDOMAIN.workers.dev/mcp \
-  --header "Authorization: Bearer $MEMORY_AUTH_TOKEN"
+The server speaks the standard [Model Context Protocol](https://modelcontextprotocol.io/). Any MCP client can connect via HTTP with a Bearer token header.
+
+---
+
+## Available tools
+
+The server exposes 20 MCP tools. Your AI assistant discovers and uses them automatically -- you don't need to call them yourself.
+
+### Core memory
+
+| Tool | What it does |
+|------|-------------|
+| `read` | Read a file from memory |
+| `write` | Save a file (auto-indexes for search) |
+| `list` | List files in a directory |
+| `search` | Find memories by meaning (semantic search) |
+| `history` | See previous versions of a file |
+| `rollback` | Restore a file to an earlier version |
+| `execute` | Run JavaScript queries against your memory |
+
+### Conversations
+
+| Tool | What it does |
+|------|-------------|
+| `index_conversations` | Import past AI sessions for search |
+| `search_conversations` | Search across past conversations by meaning |
+| `expand_conversation` | Get full context around a search result |
+| `conversation_stats` | See how many conversations are indexed |
+
+### Reminders
+
+| Tool | What it does |
+|------|-------------|
+| `schedule_reminder` | Set a one-time or recurring reminder |
+| `check_reminders` | Poll for fired reminders (called on startup) |
+| `list_reminders` | List all active reminders |
+| `remove_reminder` | Delete a reminder |
+
+### Reflection
+
+| Tool | What it does |
+|------|-------------|
+| `list_pending_reflections` | See proposed memory improvements |
+| `apply_reflection_changes` | Apply a suggested improvement |
+| `archive_reflection` | Dismiss a suggestion |
+
+---
+
+## Recommended memory structure
+
+You can organize your memory however you like. Here's a structure that works well:
+
+```
+memory/
+├── learnings.md        # Lessons learned, gotchas, corrections
+├── preferences.md      # Your coding style, tool preferences
+├── people.md           # Teammates, roles, availability
+├── projects.md         # Active projects, architecture decisions
+│
+├── patterns/           # Reusable patterns and templates
+│   ├── git.md
+│   ├── code-review.md
+│   └── debugging.md
+│
+├── workload/           # Current tasks and priorities
+│   ├── active.md
+│   ├── backlog.md
+│   └── archive/
+│
+└── archive/            # Old context you might need someday
 ```
 
-#### Cursor
+---
 
-Settings > MCP Servers > Add:
-- URL: `https://agent-memory-mcp.YOUR_SUBDOMAIN.workers.dev/mcp`
-- Headers: `Authorization: Bearer YOUR_TOKEN`
+## Scheduled reflection
 
-## Available Tools
+The server includes an automated self-improvement system. Every day at 6am UTC, it reviews your memory files and cleans them up.
 
-### `read`
-Read a file from memory storage.
+**Quick scan** (fast model) catches simple issues -- typos, broken formatting, duplicate entries -- and fixes them automatically.
 
-```typescript
-read({ path: "memory/learnings.md" })
-// Returns: { content, updated_at, size }
-```
+**Deep analysis** (reasoning model) looks for contradictions, outdated information, and gaps. It proposes changes for you to review.
 
-### `write`
-Write content to a file. Automatically updates search index.
-
-```typescript
-write({ path: "memory/learnings.md", content: "# My Learnings\n..." })
-// Returns: { success: true, version_id }
-```
-
-### `list`
-List files in a directory.
-
-```typescript
-list({ path: "memory/", recursive: true })
-// Returns: { files: [{ path, size, updated_at }] }
-```
-
-### `search`
-Search memory by meaning. Returns relevant file snippets.
-
-```typescript
-search({ query: "how to deploy workers", limit: 5 })
-// Returns: { results: [{ path, snippet, score }] }
-```
-
-### `history`
-List previous versions of a file.
-
-```typescript
-history({ path: "memory/learnings.md", limit: 10 })
-// Returns: { versions: [{ version_id, timestamp, size }] }
-```
-
-### `rollback`
-Restore a file to a previous version.
-
-```typescript
-rollback({ path: "memory/learnings.md", version_id: "abc123" })
-// Returns: { success: true, restored_from }
-```
-
-### `execute`
-Execute JavaScript code against memory contents.
-
-```typescript
-execute({
-  code: `
-    const files = await memory.list("memory/");
-    const contents = await Promise.all(files.map(f => memory.read(f.path)));
-    return contents.filter(c => c.includes("TypeScript")).length;
-  `
-})
-// Returns: { result: 5 }
-```
-
-## Conversation Indexing
-
-Index and search past AI assistant conversations.
-
-### `index_conversations`
-Bulk index sessions from your AI assistant (e.g., OpenCode sessions).
-
-```typescript
-index_conversations({
-  sessions: [
-    {
-      sessionId: "session-123",
-      project: "my-project",
-      data: { messages: [...] }
-    }
-  ]
-})
-// Returns: { added: 5, updated: 0, unchanged: 2 }
-```
-
-### `search_conversations`
-Semantic search across past conversations.
-
-```typescript
-search_conversations({ query: "how to deploy workers", limit: 10 })
-// Returns: { results: [{ exchange, score, adjustedScore }] }
-```
-
-### `expand_conversation`
-Get full context around a conversation exchange.
-
-```typescript
-expand_conversation({ sessionId: "session-123", exchangeId: "session-123-5" })
-// Returns: { project, exchanges, messages }
-```
-
-### `conversation_stats`
-Get statistics about indexed conversations.
-
-```typescript
-conversation_stats()
-// Returns: { exchangeCount: 150, sessionCount: 25, lastUpdated: "..." }
-```
-
-## Scheduled Reflection
-
-The server includes an agentic self-improvement system that runs daily via cron trigger (6am UTC).
-
-### How It Works
-
-1. **Quick Scan** (GLM Flash): Scans memory files for simple issues like typos, formatting, and duplicates. Auto-applies safe fixes.
-
-2. **Deep Analysis** (Kimi K2.5): Analyzes memory for contradictions, outdated info, gaps, and semantic duplicates. Proposes substantive changes for human review.
-
-3. **Staged Changes**: All proposed changes are written to `memory/reflections/pending/` for review before applying.
-
-4. **Notifications**: Sends a summary to Google Chat after each reflection.
-
-### Reflection Tools
-
-The following MCP tools are available for managing reflections:
-
-- `list_pending_reflections` - List pending reflection files awaiting review
-- `apply_reflection_changes` - Apply proposed changes from a reflection
-- `archive_reflection` - Move a reviewed reflection to the archive
-
-### Manual Trigger
+You get a notification summary after each run. You can also trigger it manually:
 
 ```bash
 curl -X POST "https://your-worker.workers.dev/reflect" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-### Models Used
+---
 
-- **Primary (Deep Analysis)**: `@cf/moonshotai/kimi-k2.5` - 1T parameter model for high-quality reasoning
-- **Fast (Quick Scan)**: `@cf/zai-org/glm-4.7-flash` - Lightweight model for rapid scans
-- **Fallback**: `@cf/meta/llama-3.3-70b-instruct-fp8-fast` - Proven reliable if others unavailable
+## Cost
 
-## Reminders
+Runs entirely within Cloudflare's free tier for personal use:
 
-Schedule reminders that fire on client poll.
+| Service | Free tier limit | Typical usage | Cost |
+|---------|----------------|---------------|------|
+| R2 Storage | 10 GB/month | ~1 MB | $0 |
+| R2 Operations | 10M reads, 1M writes | ~3K reads, ~600 writes | $0 |
+| Workers | 10M requests/month | ~6K | $0 |
+| Workers AI | 10K neurons/day | ~60 | $0 |
+| Durable Objects | 100K requests/day | ~200 | $0 |
 
-### `schedule_reminder`
-Create a one-shot or recurring reminder.
+**Total: $0/month**
 
-```typescript
-// One-shot reminder
-schedule_reminder({
-  id: "meeting-prep",
-  type: "once",
-  expression: "2026-02-01T10:00:00Z",
-  description: "Prepare for team meeting",
-  payload: "Review agenda and prepare status update"
-})
-
-// Cron reminder (daily at 9am UTC)
-schedule_reminder({
-  id: "daily-standup",
-  type: "cron",
-  expression: "0 9 * * *",
-  description: "Daily standup",
-  payload: "Time for daily standup!"
-})
-```
-
-### `check_reminders`
-Poll for fired reminders. Clients call this on startup.
-
-```typescript
-check_reminders()
-// Returns: { fired: [{ reminder, firedAt }] }
-```
-
-### `list_reminders`
-List all scheduled reminders.
-
-```typescript
-list_reminders()
-// Returns: { reminders: [...] }
-```
-
-### `remove_reminder`
-Delete a reminder by ID.
-
-```typescript
-remove_reminder({ id: "daily-standup" })
-// Returns: { success: true }
-```
-
-## Time-Weighted Search
-
-Search results are automatically boosted by recency. Recent memories rank higher than older ones using exponential decay with a 30-day half-life.
-
-## Recommended Memory Structure
-
-```
-memory/
-├── learnings.md        # Corrections, lessons learned
-├── preferences.md      # User preferences, working style
-├── people.md           # People you work with
-├── projects.md         # Active projects
-│
-├── patterns/           # Reusable patterns
-│   ├── git.md
-│   ├── code-review.md
-│   └── debugging.md
-│
-├── workload/           # Current work tracking
-│   ├── active.md
-│   ├── backlog.md
-│   └── archive/
-│
-└── archive/            # Old context
-```
+---
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Run locally
-npm run dev
-
-# Run tests
-npm test
-
-# Run specific test suites
-npm run test:unit
-npm run test:integration
-
-# Deploy
-npm run deploy
+npm install       # Install dependencies
+npm run dev       # Run locally
+npm test          # Run all tests
+npm run test:unit # Unit tests only
+npm run deploy    # Deploy to Cloudflare
 ```
 
-## Architecture
+### Migrating existing memory files
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    agent-memory-mcp Worker                       │
-├─────────────────────────────────────────────────────────────────┤
-│  MCP Server                                                      │
-│  - Auth validation (Bearer token)                                │
-│  - Tool handlers (read, write, list, search, etc.)              │
-├─────────────────────┬───────────────────────────────────────────┤
-│  R2 Bucket          │  Durable Object (MemoryIndex)             │
-│  - File storage     │  - HNSW vector index                      │
-│  - Versioning       │  - SQLite persistence                     │
-│                     │  - Workers AI embeddings                   │
-└─────────────────────┴───────────────────────────────────────────┘
+If you have local memory files you want to upload:
+
+```bash
+npm run migrate   # Upload local files to your deployed server
+npm run export    # Download all files from the server to local disk
 ```
 
-## Cost Estimate (Personal Use)
-
-| Service | Free Tier | Typical Usage | Cost |
-|---------|-----------|---------------|------|
-| R2 Storage | 10 GB/month | ~1 MB | $0 |
-| R2 Reads | 10M/month | ~3K | $0 |
-| R2 Writes | 1M/month | ~600 | $0 |
-| Workers Requests | 10M/month | ~6K | $0 |
-| Workers AI | 10K neurons/day | ~60 | $0 |
-| Durable Objects | 100K req/day | ~200 | $0 |
-
-**Total: $0/month** (within free tier)
+---
 
 ## License
 

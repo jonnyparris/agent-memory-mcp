@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" fill="none">
+  <defs>
+    <linearGradient id="stepGrad1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="stepGrad2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="stepGrad3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="stepGrad4" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <filter id="shadow2" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="400" rx="16" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="400" y="40" text-anchor="middle" fill="#f8fafc" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="700">What Happens When You Save a Memory</text>
+  <text x="400" y="60" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="13">Example: your AI assistant learns you prefer TypeScript over JavaScript</text>
+
+  <!-- Step 1: Write -->
+  <g filter="url(#shadow2)">
+    <rect x="30" y="90" width="165" height="200" rx="12" fill="#1e293b" stroke="#f97316" stroke-width="1.5"/>
+    <circle cx="113" cy="115" r="18" fill="url(#stepGrad1)"/>
+    <text x="113" y="121" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="14" font-weight="700">1</text>
+    <text x="113" y="150" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="14" font-weight="600">Write</text>
+    <text x="113" y="170" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">Your AI saves a note</text>
+    <text x="113" y="185" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">to your memory</text>
+
+    <!-- Code snippet -->
+    <rect x="42" y="200" width="141" height="74" rx="6" fill="#0f172a"/>
+    <text x="50" y="218" fill="#f97316" font-family="monospace" font-size="9">write</text>
+    <text x="80" y="218" fill="#94a3b8" font-family="monospace" font-size="9">({</text>
+    <text x="54" y="233" fill="#94a3b8" font-family="monospace" font-size="9">path:</text>
+    <text x="54" y="248" fill="#4ade80" font-family="monospace" font-size="9">"preferences.md"</text>
+    <text x="54" y="263" fill="#94a3b8" font-family="monospace" font-size="9">content: "Uses TS"</text>
+    <text x="50" y="278" fill="#94a3b8" font-family="monospace" font-size="9">})</text>
+  </g>
+
+  <!-- Arrow 1→2 -->
+  <line x1="195" y1="190" x2="230" y2="190" stroke="#475569" stroke-width="2"/>
+  <polygon points="228,184 240,190 228,196" fill="#475569"/>
+
+  <!-- Step 2: Store -->
+  <g filter="url(#shadow2)">
+    <rect x="240" y="90" width="165" height="200" rx="12" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+    <circle cx="323" cy="115" r="18" fill="url(#stepGrad2)"/>
+    <text x="323" y="121" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="14" font-weight="700">2</text>
+    <text x="323" y="150" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="14" font-weight="600">Store</text>
+    <text x="323" y="170" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">File saved to R2</text>
+    <text x="323" y="185" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">with version history</text>
+
+    <!-- Visual: file with versions -->
+    <rect x="283" y="205" width="80" height="24" rx="4" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+    <text x="323" y="221" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="10">v3 (latest)</text>
+    <rect x="283" y="233" width="80" height="20" rx="4" fill="#0f172a" stroke="#1e3a5f" stroke-width="1"/>
+    <text x="323" y="247" text-anchor="middle" fill="#475569" font-family="system-ui, sans-serif" font-size="9">v2</text>
+    <rect x="283" y="257" width="80" height="20" rx="4" fill="#0f172a" stroke="#1e3a5f" stroke-width="1"/>
+    <text x="323" y="271" text-anchor="middle" fill="#475569" font-family="system-ui, sans-serif" font-size="9">v1</text>
+  </g>
+
+  <!-- Arrow 2→3 -->
+  <line x1="405" y1="190" x2="440" y2="190" stroke="#475569" stroke-width="2"/>
+  <polygon points="438,184 450,190 438,196" fill="#475569"/>
+
+  <!-- Step 3: Index -->
+  <g filter="url(#shadow2)">
+    <rect x="450" y="90" width="165" height="200" rx="12" fill="#1e293b" stroke="#8b5cf6" stroke-width="1.5"/>
+    <circle cx="533" cy="115" r="18" fill="url(#stepGrad3)"/>
+    <text x="533" y="121" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="14" font-weight="700">3</text>
+    <text x="533" y="150" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="14" font-weight="600">Index</text>
+    <text x="533" y="170" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">AI turns your text</text>
+    <text x="533" y="185" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">into a searchable vector</text>
+
+    <!-- Visual: embedding dots -->
+    <rect x="472" y="205" width="120" height="70" rx="6" fill="#0f172a"/>
+    <text x="532" y="222" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">[0.23, 0.87, ...]</text>
+    <circle cx="492" cy="245" r="4" fill="#8b5cf6" opacity="0.8"/>
+    <circle cx="510" cy="252" r="4" fill="#8b5cf6" opacity="0.6"/>
+    <circle cx="530" cy="240" r="4" fill="#8b5cf6" opacity="0.9"/>
+    <circle cx="548" cy="258" r="4" fill="#8b5cf6" opacity="0.5"/>
+    <circle cx="566" cy="244" r="4" fill="#8b5cf6" opacity="0.7"/>
+    <circle cx="520" cy="262" r="5" fill="#f97316" opacity="0.9"/>
+    <text x="532" y="278" text-anchor="middle" fill="#a78bfa" font-family="system-ui, sans-serif" font-size="8">HNSW vector space</text>
+  </g>
+
+  <!-- Arrow 3→4 -->
+  <line x1="615" y1="190" x2="650" y2="190" stroke="#475569" stroke-width="2"/>
+  <polygon points="648,184 660,190 648,196" fill="#475569"/>
+
+  <!-- Step 4: Search -->
+  <g filter="url(#shadow2)">
+    <rect x="660" y="90" width="110" height="200" rx="12" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+    <circle cx="715" cy="115" r="18" fill="url(#stepGrad4)"/>
+    <text x="715" y="121" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="14" font-weight="700">4</text>
+    <text x="715" y="150" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="14" font-weight="600">Search</text>
+    <text x="715" y="170" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">Later, find it</text>
+    <text x="715" y="185" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="11">by meaning</text>
+
+    <!-- Visual: query match -->
+    <rect x="672" y="205" width="86" height="70" rx="6" fill="#0f172a"/>
+    <text x="715" y="222" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="9">"What lang do</text>
+    <text x="715" y="234" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="9">they prefer?"</text>
+    <text x="715" y="256" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="9">&#x2713; preferences.md</text>
+    <text x="715" y="270" text-anchor="middle" fill="#64748b" font-family="system-ui, sans-serif" font-size="8">score: 0.94</text>
+  </g>
+
+  <!-- Bottom: key insight -->
+  <rect x="100" y="320" width="600" height="56" rx="10" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+  <text x="400" y="344" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Search finds memories by meaning, not exact keywords.</text>
+  <text x="400" y="362" text-anchor="middle" fill="#64748b" font-family="system-ui, sans-serif" font-size="11">"What programming language?" matches "Uses TypeScript" -- even though the words are different.</text>
+</svg>

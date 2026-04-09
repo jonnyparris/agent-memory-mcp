@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520" fill="none">
+  <defs>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="r2Grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="doGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="aiGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.1"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="520" rx="16" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="400" y="42" text-anchor="middle" fill="#f8fafc" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="700">How agent-memory-mcp Works</text>
+  <text x="400" y="64" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="13">Your AI assistant connects to a single Cloudflare Worker that manages everything</text>
+
+  <!-- AI Assistant boxes (left side) -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="110" width="160" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+    <text x="110" y="128" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">YOUR AI ASSISTANT</text>
+    <text x="110" y="145" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Claude Code</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="30" y="168" width="160" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+    <text x="110" y="186" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">YOUR AI ASSISTANT</text>
+    <text x="110" y="203" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Cursor</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="30" y="226" width="160" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+    <text x="110" y="244" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">YOUR AI ASSISTANT</text>
+    <text x="110" y="261" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">OpenCode</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="30" y="284" width="160" height="44" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+    <text x="110" y="302" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">YOUR AI ASSISTANT</text>
+    <text x="110" y="319" text-anchor="middle" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="13" font-weight="600">Windsurf / Any MCP</text>
+  </g>
+
+  <!-- Arrows from assistants to Worker -->
+  <line x1="190" y1="132" x2="290" y2="215" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="190" y1="190" x2="290" y2="215" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="190" y1="248" x2="290" y2="250" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="190" y1="306" x2="290" y2="280" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4"/>
+
+  <!-- MCP label on arrow -->
+  <rect x="215" y="218" width="50" height="20" rx="4" fill="#1e293b" stroke="#f97316" stroke-width="1"/>
+  <text x="240" y="232" text-anchor="middle" fill="#f97316" font-family="system-ui, sans-serif" font-size="10" font-weight="600">MCP</text>
+
+  <!-- Main Worker box -->
+  <g filter="url(#shadow)">
+    <rect x="290" y="100" width="230" height="330" rx="14" fill="#1e293b" stroke="url(#headerGrad)" stroke-width="2"/>
+    <rect x="290" y="100" width="230" height="40" rx="14" fill="url(#headerGrad)"/>
+    <rect x="290" y="126" width="230" height="14" fill="url(#headerGrad)"/>
+    <text x="405" y="126" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="14" font-weight="700">Cloudflare Worker</text>
+
+    <!-- Auth -->
+    <rect x="306" y="156" width="198" height="34" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+    <text x="316" y="176" fill="#f97316" font-family="system-ui, sans-serif" font-size="11">&#x1f512;</text>
+    <text x="336" y="178" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="12" font-weight="500">Bearer Token Auth</text>
+
+    <!-- MCP Server -->
+    <rect x="306" y="200" width="198" height="34" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+    <text x="336" y="222" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="12" font-weight="500">MCP Server (20 tools)</text>
+
+    <!-- Tool groups -->
+    <rect x="306" y="244" width="95" height="28" rx="6" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+    <text x="354" y="263" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="10" font-weight="500">Read / Write</text>
+
+    <rect x="409" y="244" width="95" height="28" rx="6" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+    <text x="457" y="263" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="10" font-weight="500">Search</text>
+
+    <rect x="306" y="280" width="95" height="28" rx="6" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+    <text x="354" y="299" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="10" font-weight="500">History</text>
+
+    <rect x="409" y="280" width="95" height="28" rx="6" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+    <text x="457" y="299" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="10" font-weight="500">Reminders</text>
+
+    <rect x="306" y="316" width="95" height="28" rx="6" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+    <text x="354" y="335" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="10" font-weight="500">Conversations</text>
+
+    <rect x="409" y="316" width="95" height="28" rx="6" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+    <text x="457" y="335" text-anchor="middle" fill="#93c5fd" font-family="system-ui, sans-serif" font-size="10" font-weight="500">Reflection</text>
+
+    <!-- Cron -->
+    <rect x="306" y="358" width="198" height="28" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="405" y="377" text-anchor="middle" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">Cron: daily self-improvement @ 6am UTC</text>
+
+    <!-- Free badge -->
+    <rect x="306" y="396" width="198" height="24" rx="6" fill="#052e16" stroke="#22c55e" stroke-width="1"/>
+    <text x="405" y="413" text-anchor="middle" fill="#4ade80" font-family="system-ui, sans-serif" font-size="11" font-weight="600">Runs on Cloudflare free tier</text>
+  </g>
+
+  <!-- Right side: Storage backends -->
+  <!-- Arrows from Worker to backends -->
+  <line x1="520" y1="180" x2="580" y2="155" stroke="#3b82f6" stroke-width="1.5"/>
+  <line x1="520" y1="260" x2="580" y2="285" stroke="#8b5cf6" stroke-width="1.5"/>
+  <line x1="520" y1="340" x2="580" y2="405" stroke="#10b981" stroke-width="1.5"/>
+
+  <!-- R2 -->
+  <g filter="url(#shadow)">
+    <rect x="580" y="110" width="190" height="90" rx="12" fill="#1e293b" stroke="url(#r2Grad)" stroke-width="2"/>
+    <rect x="580" y="110" width="190" height="32" rx="12" fill="url(#r2Grad)"/>
+    <rect x="580" y="128" width="190" height="14" fill="url(#r2Grad)"/>
+    <text x="675" y="132" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="12" font-weight="700">R2 Object Storage</text>
+    <text x="675" y="162" text-anchor="middle" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="11">Your memory files</text>
+    <text x="675" y="180" text-anchor="middle" fill="#64748b" font-family="system-ui, sans-serif" font-size="10">With version history</text>
+  </g>
+
+  <!-- Durable Object -->
+  <g filter="url(#shadow)">
+    <rect x="580" y="240" width="190" height="90" rx="12" fill="#1e293b" stroke="url(#doGrad)" stroke-width="2"/>
+    <rect x="580" y="240" width="190" height="32" rx="12" fill="url(#doGrad)"/>
+    <rect x="580" y="258" width="190" height="14" fill="url(#doGrad)"/>
+    <text x="675" y="262" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="12" font-weight="700">Durable Object</text>
+    <text x="675" y="292" text-anchor="middle" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="11">HNSW vector index</text>
+    <text x="675" y="310" text-anchor="middle" fill="#64748b" font-family="system-ui, sans-serif" font-size="10">SQLite-backed semantic search</text>
+  </g>
+
+  <!-- Workers AI -->
+  <g filter="url(#shadow)">
+    <rect x="580" y="370" width="190" height="90" rx="12" fill="#1e293b" stroke="url(#aiGrad)" stroke-width="2"/>
+    <rect x="580" y="370" width="190" height="32" rx="12" fill="url(#aiGrad)"/>
+    <rect x="580" y="388" width="190" height="14" fill="url(#aiGrad)"/>
+    <text x="675" y="392" text-anchor="middle" fill="#fff" font-family="system-ui, sans-serif" font-size="12" font-weight="700">Workers AI</text>
+    <text x="675" y="422" text-anchor="middle" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="11">Embeddings (bge-m3)</text>
+    <text x="675" y="440" text-anchor="middle" fill="#64748b" font-family="system-ui, sans-serif" font-size="10">+ LLMs for reflection</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="400" y="498" text-anchor="middle" fill="#475569" font-family="system-ui, sans-serif" font-size="11">All data stays in your Cloudflare account. Nothing leaves your infrastructure.</text>
+</svg>
