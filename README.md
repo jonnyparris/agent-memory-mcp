@@ -152,6 +152,7 @@ The server exposes 20 MCP tools. Your AI assistant discovers and uses them autom
 | `search` | Find memories by meaning (semantic search) |
 | `history` | See previous versions of a file |
 | `rollback` | Restore a file to an earlier version |
+| `get_backlinks` | List files that link to a target via `[[wikilinks]]` |
 | `execute` | Run JavaScript queries against your memory |
 
 ### Conversations
