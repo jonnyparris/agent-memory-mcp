@@ -11,6 +11,7 @@ import { archiveReflection, listPendingReflections } from "./reflection/staging"
 import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { createR2Storage } from "./storage/r2";
+import { parseTags } from "./tags";
 import { extractSnippet, truncate } from "./truncate";
 import type { Env } from "./types";
 import { parseWikilinks } from "./wikilinks";
@@ -112,6 +113,8 @@ export function createServer(env: Env): McpServer {
 		async ({ path, content }) => {
 			const result = await storage.write(path, content);
 
+			// Extract tags from YAML frontmatter so they end up in the index.
+			const tags = parseTags(content);
 			// Extract Obsidian-style wikilinks so the DO can answer backlink
 			// queries later. Raw targets — we don't resolve to concrete paths.
 			const links = parseWikilinks(content);
@@ -124,7 +127,7 @@ export function createServer(env: Env): McpServer {
 				const updateResponse = await index.fetch(
 					new Request("http://internal/update", {
 						method: "POST",
-						body: JSON.stringify({ path, content, links }),
+						body: JSON.stringify({ path, content, tags, links }),
 					}),
 				);
 				if (!updateResponse.ok) {
@@ -143,6 +146,7 @@ export function createServer(env: Env): McpServer {
 							success: true,
 							version_id: result.version_id,
 							embedding_error: embeddingError,
+							tags,
 							links,
 						}),
 					},
