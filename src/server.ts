@@ -13,6 +13,7 @@ import { checkReminders, listReminders, removeReminder, scheduleReminder } from 
 import { createR2Storage } from "./storage/r2";
 import { extractSnippet, truncate } from "./truncate";
 import type { Env } from "./types";
+import { parseWikilinks } from "./wikilinks";
 
 export function createServer(env: Env): McpServer {
 	const server = new McpServer({
@@ -67,6 +68,10 @@ export function createServer(env: Env): McpServer {
 		async ({ path, content }) => {
 			const result = await storage.write(path, content);
 
+			// Extract Obsidian-style wikilinks so the DO can answer backlink
+			// queries later. Raw targets — we don't resolve to concrete paths.
+			const links = parseWikilinks(content);
+
 			// Update embeddings in Durable Object
 			let embeddingError: string | undefined;
 			try {
@@ -75,7 +80,7 @@ export function createServer(env: Env): McpServer {
 				const updateResponse = await index.fetch(
 					new Request("http://internal/update", {
 						method: "POST",
-						body: JSON.stringify({ path, content }),
+						body: JSON.stringify({ path, content, links }),
 					}),
 				);
 				if (!updateResponse.ok) {
@@ -94,6 +99,7 @@ export function createServer(env: Env): McpServer {
 							success: true,
 							version_id: result.version_id,
 							embedding_error: embeddingError,
+							links,
 						}),
 					},
 				],
@@ -224,6 +230,61 @@ export function createServer(env: Env): McpServer {
 					},
 				],
 			};
+		},
+	);
+
+	server.registerTool(
+		"get_backlinks",
+		{
+			description:
+				"List files that link to the given target via Obsidian-style wikilinks ([[target]]).",
+			inputSchema: {
+				target: z
+					.string()
+					.describe("Wikilink target as written inside [[...]], e.g. 'memory/learnings'"),
+			},
+		},
+		async ({ target }) => {
+			try {
+				const indexId = env.MEMORY_INDEX.idFromName("default");
+				const index = env.MEMORY_INDEX.get(indexId);
+				const response = await index.fetch(
+					new Request(`http://internal/backlinks?target=${encodeURIComponent(target)}`),
+				);
+				const body = (await response.json()) as { backlinks?: string[]; error?: string };
+				if (!response.ok || body.error) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									error: "get_backlinks failed",
+									details: body.error ?? `DO returned ${response.status}`,
+								}),
+							},
+						],
+						isError: true,
+					};
+				}
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({ target, backlinks: body.backlinks ?? [] }),
+						},
+					],
+				};
+			} catch (e) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({ error: "get_backlinks failed", details: String(e) }),
+						},
+					],
+					isError: true,
+				};
+			}
 		},
 	);
 

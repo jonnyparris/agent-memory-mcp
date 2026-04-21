@@ -28,6 +28,21 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 			)
 		`);
 
+		// Outgoing wikilink index. `source` is the file that contains the
+		// link; `target` is the raw link text from inside [[...]]. Populated
+		// lazily by `write` via the /update endpoint. Indexed on `target`
+		// so backlink queries are a single lookup.
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS file_links (
+				source TEXT NOT NULL,
+				target TEXT NOT NULL,
+				PRIMARY KEY (source, target)
+			)
+		`);
+		this.ctx.storage.sql.exec(
+			"CREATE INDEX IF NOT EXISTS idx_file_links_target ON file_links(target)",
+		);
+
 		// Rebuild HNSW index from stored embeddings
 		this.index = new HNSWIndex(EMBEDDING_DIMENSIONS);
 
@@ -77,12 +92,20 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 			return this.handleStats();
 		}
 
+		if (url.pathname === "/backlinks" && request.method === "GET") {
+			return this.handleBacklinks(url);
+		}
+
 		return new Response("Not Found", { status: 404 });
 	}
 
 	private async handleUpdate(request: Request): Promise<Response> {
 		try {
-			const { path, content } = (await request.json()) as { path: string; content: string };
+			const { path, content, links } = (await request.json()) as {
+				path: string;
+				content: string;
+				links?: string[];
+			};
 
 			// Generate embedding
 			const { vector } = await generateEmbedding(this.env.AI, content);
@@ -95,6 +118,21 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 				embeddingBlob,
 				Date.now(),
 			);
+
+			// Replace this file's outgoing wikilinks. The write tool is the
+			// authoritative source — on every write we wipe and reinsert so
+			// stale links from previous versions don't linger in the index.
+			if (links !== undefined) {
+				this.ctx.storage.sql.exec("DELETE FROM file_links WHERE source = ?", path);
+				for (const target of links) {
+					if (!target) continue;
+					this.ctx.storage.sql.exec(
+						"INSERT OR IGNORE INTO file_links (source, target) VALUES (?, ?)",
+						path,
+						target,
+					);
+				}
+			}
 
 			// Update HNSW index
 			if (this.index!.size() > 0) {
@@ -185,11 +223,31 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 
 		// Remove from SQLite
 		this.ctx.storage.sql.exec("DELETE FROM memories WHERE path = ?", path);
+		this.ctx.storage.sql.exec("DELETE FROM file_links WHERE source = ?", path);
 
 		// Remove from HNSW index
 		this.index!.delete(path);
 
 		return new Response(JSON.stringify({ success: true }), {
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	private handleBacklinks(url: URL): Response {
+		const target = url.searchParams.get("target");
+		if (!target) {
+			return new Response(JSON.stringify({ error: "target parameter required" }), {
+				status: 400,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+		const rows = [
+			...this.ctx.storage.sql.exec<{ source: string }>(
+				"SELECT source FROM file_links WHERE target = ? ORDER BY source ASC",
+				target,
+			),
+		];
+		return new Response(JSON.stringify({ backlinks: rows.map((r) => r.source) }), {
 			headers: { "Content-Type": "application/json" },
 		});
 	}
