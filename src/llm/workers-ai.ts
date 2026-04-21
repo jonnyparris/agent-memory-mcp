@@ -6,7 +6,7 @@
  * /v1/chat/completions endpoint.
  *
  * Models with tool calling support:
- * - @cf/moonshotai/kimi-k2.5 (1T params, highest quality) - PRIMARY
+ * - @cf/moonshotai/kimi-k2.6 (1T params, 262k context, agentic) - PRIMARY
  * - @cf/zai-org/glm-4.7-flash (fast, lightweight) - AUTO-APPLY
  * - @cf/meta/llama-3.3-70b-instruct-fp8-fast (proven reliable) - FALLBACK
  * - @cf/qwen/qwq-32b (reasoning model, no tool calling) - LEGACY
@@ -266,7 +266,7 @@ export class WorkersAIProvider implements LLMProvider {
 /** Model presets for different use cases */
 export const REFLECTION_MODELS = {
 	/** Primary model for deep analysis - highest quality */
-	primary: "@cf/moonshotai/kimi-k2.5",
+	primary: "@cf/moonshotai/kimi-k2.6",
 	/** Fast model for quick scans and auto-apply */
 	fast: "@cf/zai-org/glm-4.7-flash",
 	/** Fallback if primary unavailable */

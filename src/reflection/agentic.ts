@@ -3,7 +3,7 @@
  *
  * Implements the two-tier reflection architecture:
  * - Phase A: Quick Scan (GLM Flash) - auto-applies low-risk fixes
- * - Phase B: Deep Analysis (Kimi K2.5) - proposes substantive changes
+ * - Phase B: Deep Analysis (Kimi K2.6) - proposes substantive changes
  */
 
 import type { LLMMessage } from "../llm/types";
@@ -46,14 +46,21 @@ const DEEP_ANALYSIS_SYSTEM_PROMPT = `You are an AI agent performing deep reflect
 
 Your memory contains:
 - memory/learnings.md: Technical lessons and gotchas
-- memory/preferences.md: Communication and code style preferences  
+- memory/preferences.md: Communication and code style preferences
 - memory/projects.md: Active and past projects
 - memory/patterns/: Reusable code patterns and knowledge
 - memory/workload/: Work tracking, todos, and plans
 
+Memory files can reference each other using Obsidian-style wikilinks:
+[[path/to/other-file]] or [[path|display text]]. These are indexed as
+backlinks — use the getBacklinks tool to see which files reference a
+target. High backlink count means the file is a hub; zero backlinks
+on a non-leaf file often means it's orphaned.
+
 Your task is to:
 1. Search memory to understand what's there
-2. Identify issues: contradictions, outdated info, gaps, semantic duplicates
+2. Identify issues: contradictions, outdated info, gaps, semantic
+   duplicates, orphaned files, and missing cross-references
 3. Propose specific edits to fix issues (staged for human review)
 4. Be specific - if you find an issue, propose the exact fix
 
@@ -62,6 +69,10 @@ Rules:
 - Focus on substantive improvements, not formatting (quick scan handles that)
 - If issues were flagged from quick scan, analyze them first
 - Use searchMemory to find related content before proposing merges
+- Use getBacklinks before proposing deletion or merge of a referenced file
+- When two files clearly relate but don't link, propose a proposeEdit that
+  adds a [[wikilink]] in the natural spot. Favour a short "See also"
+  section over inline links unless the flow reads naturally.
 - Be specific in your reasons - explain what's wrong and why
 
 Call finishReflection when done.`;
@@ -205,7 +216,7 @@ async function runQuickScan(
 }
 
 /**
- * Phase B: Deep Analysis with Kimi K2.5
+ * Phase B: Deep Analysis with Kimi K2.6
  */
 async function runDeepAnalysis(
 	env: Env,

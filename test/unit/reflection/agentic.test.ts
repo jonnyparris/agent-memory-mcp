@@ -5,11 +5,11 @@ import { createMockStorage } from "../../mocks/storage";
 vi.mock("../../../src/llm/workers-ai", () => ({
 	WorkersAIProvider: vi.fn().mockImplementation(() => ({
 		name: "workers-ai",
-		model: "@cf/moonshotai/kimi-k2.5",
+		model: "@cf/moonshotai/kimi-k2.6",
 		complete: vi.fn(),
 	})),
 	REFLECTION_MODELS: {
-		primary: "@cf/moonshotai/kimi-k2.5",
+		primary: "@cf/moonshotai/kimi-k2.6",
 		fast: "@cf/zai-org/glm-4.7-flash",
 		fallback: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 		legacy: "@cf/qwen/qwq-32b",
@@ -47,7 +47,7 @@ describe("runAgenticReflection", () => {
 			} as any,
 			AI: {} as any,
 			MEMORY_AUTH_TOKEN: "test-token",
-			REFLECTION_MODEL: "@cf/moonshotai/kimi-k2.5",
+			REFLECTION_MODEL: "@cf/moonshotai/kimi-k2.6",
 			REFLECTION_MODEL_FAST: "@cf/zai-org/glm-4.7-flash",
 		};
 
@@ -57,7 +57,7 @@ describe("runAgenticReflection", () => {
 			() =>
 				({
 					name: "workers-ai",
-					model: "@cf/moonshotai/kimi-k2.5",
+					model: "@cf/moonshotai/kimi-k2.6",
 					complete: mockLLMComplete,
 				}) as any,
 		);
@@ -284,7 +284,7 @@ describe("runDeepAnalysisOnly", () => {
 			() =>
 				({
 					name: "workers-ai",
-					model: "@cf/moonshotai/kimi-k2.5",
+					model: "@cf/moonshotai/kimi-k2.6",
 					complete: mockLLMComplete,
 				}) as any,
 		);
@@ -323,9 +323,9 @@ describe("WorkersAIProvider tool calling", () => {
 			run: vi.fn().mockResolvedValue({ response: "test" }),
 		};
 
-		const provider = new RealProvider(mockAI as any, "@cf/moonshotai/kimi-k2.5");
+		const provider = new RealProvider(mockAI as any, "@cf/moonshotai/kimi-k2.6");
 
-		expect(provider.model).toBe("@cf/moonshotai/kimi-k2.5");
+		expect(provider.model).toBe("@cf/moonshotai/kimi-k2.6");
 	});
 
 	it("should parse tool calls from response", async () => {

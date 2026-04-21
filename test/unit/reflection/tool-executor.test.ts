@@ -116,6 +116,78 @@ describe("executeReflectionTool", () => {
 		});
 	});
 
+	describe("getBacklinks", () => {
+		function contextWithBacklinks(backlinks: string[], ok = true) {
+			return createExecutionContext(mockStorage, {
+				MEMORY_BUCKET: {} as any,
+				MEMORY_INDEX: {
+					idFromName: vi.fn().mockReturnValue("test-id"),
+					get: vi.fn().mockReturnValue({
+						fetch: vi.fn().mockResolvedValue({
+							ok,
+							json: () => Promise.resolve({ backlinks }),
+							text: () => Promise.resolve("error text"),
+						}),
+					}),
+				} as any,
+				AI: {} as any,
+				MEMORY_AUTH_TOKEN: "test-token",
+			});
+		}
+
+		it("returns the backlinks array and a count", async () => {
+			const ctx = contextWithBacklinks(["memory/projects/foo.md", "memory/projects/bar.md"]);
+
+			const result = await executeReflectionTool(
+				{ name: "getBacklinks", arguments: { target: "memory/learnings" } },
+				ctx,
+			);
+
+			expect(result.success).toBe(true);
+			expect((result.result as any).target).toBe("memory/learnings");
+			expect((result.result as any).count).toBe(2);
+			expect((result.result as any).backlinks).toEqual([
+				"memory/projects/foo.md",
+				"memory/projects/bar.md",
+			]);
+		});
+
+		it("returns an empty list with count 0 when nothing links", async () => {
+			const ctx = contextWithBacklinks([]);
+
+			const result = await executeReflectionTool(
+				{ name: "getBacklinks", arguments: { target: "memory/orphan" } },
+				ctx,
+			);
+
+			expect(result.success).toBe(true);
+			expect((result.result as any).count).toBe(0);
+			expect((result.result as any).backlinks).toEqual([]);
+		});
+
+		it("errors when target is empty", async () => {
+			const result = await executeReflectionTool(
+				{ name: "getBacklinks", arguments: { target: "" } },
+				context,
+			);
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("target");
+		});
+
+		it("surfaces DO errors", async () => {
+			const ctx = contextWithBacklinks([], false);
+
+			const result = await executeReflectionTool(
+				{ name: "getBacklinks", arguments: { target: "memory/learnings" } },
+				ctx,
+			);
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("Backlinks lookup failed");
+		});
+	});
+
 	describe("proposeEdit", () => {
 		it("should stage a replace edit for existing file", async () => {
 			mockStorage._files.set("memory/learnings.md", {
