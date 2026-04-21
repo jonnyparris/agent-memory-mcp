@@ -7,7 +7,7 @@
  *
  * The agentic mode runs in two phases:
  * 1. Quick Scan (GLM Flash): Auto-applies low-risk fixes
- * 2. Deep Analysis (Kimi K2.5): Proposes substantive changes for human review
+ * 2. Deep Analysis (Kimi K2.6): Proposes substantive changes for human review
  */
 
 import { WorkersAIProvider } from "./llm/workers-ai";

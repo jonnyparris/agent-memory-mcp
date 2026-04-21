@@ -140,7 +140,7 @@ The server speaks the standard [Model Context Protocol](https://modelcontextprot
 
 ## Available tools
 
-The server exposes 20 MCP tools. Your AI assistant discovers and uses them automatically -- you don't need to call them yourself.
+The server exposes 22 MCP tools. Your AI assistant discovers and uses them automatically -- you don't need to call them yourself.
 
 ### Core memory
 
@@ -214,9 +214,11 @@ memory/
 
 The server includes an automated self-improvement system. Every day at 6am UTC, it reviews your memory files and cleans them up.
 
-**Quick scan** (fast model) catches simple issues -- typos, broken formatting, duplicate entries -- and fixes them automatically.
+**Quick scan** (GLM 4.7 Flash) catches simple issues -- typos, broken formatting, duplicate entries -- and fixes them automatically.
 
-**Deep analysis** (reasoning model) looks for contradictions, outdated information, and gaps. It proposes changes for you to review.
+**Deep analysis** (Moonshot Kimi K2.6, 262k context, agentic) looks for contradictions, outdated information, gaps, orphaned files, and missing cross-references. It proposes changes for you to review, including adding `[[wikilinks]]` where files clearly relate but don't reference each other. It uses the backlink index to understand which files are hubs and which are orphans before proposing merges or deletes.
+
+Override the defaults with `REFLECTION_MODEL` and `REFLECTION_MODEL_FAST` in `wrangler.jsonc` or as secrets if you want to try a different pair.
 
 You get a notification summary after each run. You can also trigger it manually:
 

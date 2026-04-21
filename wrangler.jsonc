@@ -43,7 +43,7 @@
 
 	// Reflection model configuration
 	"vars": {
-		"REFLECTION_MODEL": "@cf/moonshotai/kimi-k2.5",
+		"REFLECTION_MODEL": "@cf/moonshotai/kimi-k2.6",
 		"REFLECTION_MODEL_FAST": "@cf/zai-org/glm-4.7-flash",
 		"USE_AGENTIC_REFLECTION": "true"
 	}

@@ -78,6 +78,9 @@ export async function executeReflectionTool(
 			case "listFiles":
 				return executeList(args as { path: string; recursive?: boolean }, context);
 
+			case "getBacklinks":
+				return executeGetBacklinks(args as { target: string }, context);
+
 			case "proposeEdit":
 				return executePropose(args as unknown as ProposedEdit, context);
 
@@ -219,6 +222,51 @@ async function executeList(
 			count: files.length,
 		},
 	};
+}
+
+/**
+ * Look up which files reference a given wikilink target.
+ *
+ * Calls the DO's /backlinks endpoint — the same surface the public
+ * get_backlinks MCP tool uses. Returning both the list and count lets
+ * the model reason about hubs vs orphans without another round trip.
+ */
+async function executeGetBacklinks(
+	args: { target: string },
+	context: ToolExecutionContext,
+): Promise<ToolResult> {
+	if (!args.target) {
+		return { success: false, error: "target is required" };
+	}
+
+	try {
+		const indexId = context.env.MEMORY_INDEX.idFromName("default");
+		const index = context.env.MEMORY_INDEX.get(indexId);
+		const response = await index.fetch(
+			new Request(`http://internal/backlinks?target=${encodeURIComponent(args.target)}`),
+		);
+		if (!response.ok) {
+			return {
+				success: false,
+				error: `Backlinks lookup failed: ${await response.text()}`,
+			};
+		}
+		const body = (await response.json()) as { backlinks?: string[]; error?: string };
+		if (body.error) {
+			return { success: false, error: body.error };
+		}
+		const backlinks = body.backlinks ?? [];
+		return {
+			success: true,
+			result: {
+				target: args.target,
+				backlinks,
+				count: backlinks.length,
+			},
+		};
+	} catch (e) {
+		return { success: false, error: `Backlinks error: ${String(e)}` };
+	}
 }
 
 /**

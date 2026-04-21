@@ -9,7 +9,7 @@ export interface Env {
 	CHAT_WEBHOOK_URL?: string;
 	/** Chat space ID to post notifications to (optional, for scheduled reflection notifications) */
 	CHAT_WEBHOOK_SPACE_ID?: string;
-	/** Primary model for agentic reflection (default: @cf/moonshotai/kimi-k2.5) */
+	/** Primary model for agentic reflection (default: @cf/moonshotai/kimi-k2.6) */
 	REFLECTION_MODEL?: string;
 	/** Fast model for quick scans (default: @cf/zai-org/glm-4.7-flash) */
 	REFLECTION_MODEL_FAST?: string;

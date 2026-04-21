@@ -72,6 +72,22 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 		},
 	},
 	{
+		name: "getBacklinks",
+		description:
+			"List files that link to the given target via Obsidian-style [[wikilinks]]. Use before proposing to delete or merge a file to understand what references it. Also useful for identifying hubs (many backlinks) and orphans (none).",
+		parameters: {
+			type: "object",
+			properties: {
+				target: {
+					type: "string",
+					description:
+						"Wikilink target as written inside [[...]]. For a file at memory/foo.md this is typically 'memory/foo' or 'foo' depending on how it's linked.",
+				},
+			},
+			required: ["target"],
+		},
+	},
+	{
 		name: "proposeEdit",
 		description:
 			"Propose an edit to a memory file. All proposed changes are staged for human review before being applied.",

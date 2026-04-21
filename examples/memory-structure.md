@@ -81,7 +81,7 @@ Add dates to time-sensitive content so you know when you learned something:
 
 ### Link Related Content
 
-Reference other memory files when relevant:
+Reference other memory files using Obsidian-style `[[wikilinks]]`. The server indexes these on write, so you (and the reflection agent) can ask "what references this file?" via the `get_backlinks` tool.
 
 ```markdown
 # Projects
@@ -91,9 +91,41 @@ Reference other memory files when relevant:
 Building an MCP server for AI memory.
 
 Related:
-- See `domains/cloudflare.md` for Workers patterns
-- See `patterns/deployment.md` for release checklist
+- Workers patterns: [[domains/cloudflare]]
+- Release checklist: [[patterns/deployment]]
+- Aliased link: see [[patterns/debugging|our debugging playbook]]
 ```
+
+Wikilink targets are stored exactly as written — `[[foo]]` and `[[memory/foo]]` are different targets. Resolution is up to you; the index just records the text.
+
+### Tag Your Files
+
+Add YAML frontmatter at the top of any file to tag it. Tags are indexed automatically on write, and the same `tags:` field is what [Obsidian](https://obsidian.md) reads natively, so your vault and the MCP share one source of truth.
+
+```markdown
+---
+tags: [debugging, cors, production]
+---
+
+# CORS timeout investigation
+
+...
+```
+
+You can then filter `list` and `search` by tag intersection:
+
+```jsonc
+// list only files tagged BOTH debugging and cors
+{ "tool": "list", "args": { "path": "memory", "recursive": true, "tags": ["debugging", "cors"] } }
+
+// semantic search restricted to production notes
+{ "tool": "search", "args": { "query": "rate limit errors", "tags": ["production"] } }
+
+// see everything that's currently tagged
+{ "tool": "list_tags", "args": {} }
+```
+
+Tags are lowercased and deduplicated on ingest, and a leading `#` (Obsidian-inline style) is stripped. The `list` / `search` filters use **intersection** — a file must carry every requested tag to match.
 
 ## Example Files
 
