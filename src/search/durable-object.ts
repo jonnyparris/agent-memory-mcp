@@ -93,6 +93,10 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 			return this.handleTags();
 		}
 
+		if (url.pathname === "/files-with-tags" && request.method === "POST") {
+			return this.handleFilesWithTags(request);
+		}
+
 		return new Response("Not Found", { status: 404 });
 	}
 
@@ -155,20 +159,32 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 				query,
 				limit = 5,
 				timeWeight = true,
+				tags,
 			} = (await request.json()) as {
 				query: string;
 				limit?: number;
 				timeWeight?: boolean;
+				tags?: string[];
 			};
 
 			// Generate query embedding
 			const { vector } = await generateEmbedding(this.env.AI, query);
 
-			// Search HNSW index - get more results for time-weighted reranking
-			const rawResults = this.index!.search(vector, timeWeight ? limit * 3 : limit);
+			// When a tag filter is requested, we need to post-filter HNSW
+			// output. Pull extra candidates up front so the final result set
+			// still has `limit` entries after filtering — otherwise a
+			// restrictive tag set would starve the response. The 10x
+			// multiplier is a pragmatic cap; very selective filters may still
+			// return fewer than `limit`.
+			const tagFilter = tags && tags.length > 0 ? this.resolveTagIntersection(tags) : null;
+			const overshoot = tagFilter ? limit * 10 : timeWeight ? limit * 3 : limit;
+
+			// Search HNSW index
+			const rawAll = this.index!.search(vector, overshoot);
+			const rawResults = tagFilter ? rawAll.filter((r) => tagFilter.has(r.id)) : rawAll;
 
 			if (!timeWeight) {
-				return new Response(JSON.stringify(rawResults), {
+				return new Response(JSON.stringify(rawResults.slice(0, limit)), {
 					headers: { "Content-Type": "application/json" },
 				});
 			}
@@ -254,5 +270,51 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 			}),
 			{ headers: { "Content-Type": "application/json" } },
 		);
+	}
+
+	/**
+	 * Return the set of paths that have every requested tag (intersection).
+	 *
+	 * Tags are normalised to lowercase to match the storage representation
+	 * written by the `write` tool. Empty tag lists are handled by the
+	 * callers, not here.
+	 */
+	private resolveTagIntersection(tags: string[]): Set<string> {
+		const normalised = tags.map((t) => t.toLowerCase());
+		const placeholders = normalised.map(() => "?").join(",");
+		const rows = [
+			...this.ctx.storage.sql.exec<{ path: string }>(
+				`SELECT path FROM file_tags
+				 WHERE tag IN (${placeholders})
+				 GROUP BY path
+				 HAVING COUNT(DISTINCT tag) = ?`,
+				...normalised,
+				normalised.length,
+			),
+		];
+		return new Set(rows.map((r) => r.path));
+	}
+
+	private async handleFilesWithTags(request: Request): Promise<Response> {
+		try {
+			const { tags } = (await request.json()) as { tags: string[] };
+			if (!Array.isArray(tags) || tags.length === 0) {
+				return new Response(JSON.stringify({ paths: [] }), {
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			const paths = [...this.resolveTagIntersection(tags)].sort();
+			return new Response(JSON.stringify({ paths }), {
+				headers: { "Content-Type": "application/json" },
+			});
+		} catch (e) {
+			return new Response(
+				JSON.stringify({ error: "Failed to filter by tags", details: String(e) }),
+				{
+					status: 500,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
 	}
 }

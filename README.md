@@ -148,8 +148,9 @@ The server exposes 20 MCP tools. Your AI assistant discovers and uses them autom
 |------|-------------|
 | `read` | Read a file from memory |
 | `write` | Save a file (auto-indexes for search; extracts `tags:` frontmatter for filtering) |
-| `list` | List files in a directory |
-| `search` | Find memories by meaning (semantic search) |
+| `list` | List files in a directory (optionally filter by tags) |
+| `list_tags` | List all tags with the file count for each |
+| `search` | Find memories by meaning (semantic search; optionally filter by tags) |
 | `history` | See previous versions of a file |
 | `rollback` | Restore a file to an earlier version |
 | `execute` | Run JavaScript queries against your memory |

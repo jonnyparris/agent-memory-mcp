@@ -110,37 +110,130 @@ export function createServer(env: Env): McpServer {
 	server.registerTool(
 		"list",
 		{
-			description: "List files in a directory",
+			description:
+				"List files in a directory. Pass `tags` to restrict to files matching every tag (intersection).",
 			inputSchema: {
 				path: z.string().optional().describe("Directory path, defaults to root"),
 				recursive: z.boolean().optional().default(false).describe("List recursively"),
+				tags: z
+					.array(z.string())
+					.optional()
+					.describe("If provided, only return files tagged with all of these"),
 			},
 		},
-		async ({ path, recursive }) => {
+		async ({ path, recursive, tags }) => {
 			const files = await storage.list(path, recursive);
+
+			if (!tags || tags.length === 0) {
+				return {
+					content: [{ type: "text", text: JSON.stringify({ files }) }],
+				};
+			}
+
+			// Ask the DO which paths match the tag intersection, then keep
+			// only the intersection of that set and the directory listing.
+			const indexId = env.MEMORY_INDEX.idFromName("default");
+			const index = env.MEMORY_INDEX.get(indexId);
+			const response = await index.fetch(
+				new Request("http://internal/files-with-tags", {
+					method: "POST",
+					body: JSON.stringify({ tags }),
+				}),
+			);
+			const body = (await response.json()) as { paths?: string[]; error?: string };
+			if (!response.ok || body.error) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({
+								error: "Tag filter failed",
+								details: body.error ?? `DO returned ${response.status}`,
+							}),
+						},
+					],
+					isError: true,
+				};
+			}
+			const allowed = new Set(body.paths ?? []);
+			const filtered = files.filter((f: { path: string }) => allowed.has(f.path));
 			return {
-				content: [{ type: "text", text: JSON.stringify({ files }) }],
+				content: [
+					{ type: "text", text: JSON.stringify({ files: filtered, filtered_by_tags: tags }) },
+				],
 			};
+		},
+	);
+
+	server.registerTool(
+		"list_tags",
+		{
+			description:
+				"List all tags currently indexed, with the number of files carrying each. Sorted by count desc.",
+			inputSchema: {},
+		},
+		async () => {
+			try {
+				const indexId = env.MEMORY_INDEX.idFromName("default");
+				const index = env.MEMORY_INDEX.get(indexId);
+				const response = await index.fetch(new Request("http://internal/tags"));
+				const body = (await response.json()) as {
+					tags?: Array<{ tag: string; count: number }>;
+					error?: string;
+				};
+				if (!response.ok || body.error) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									error: "list_tags failed",
+									details: body.error ?? `DO returned ${response.status}`,
+								}),
+							},
+						],
+						isError: true,
+					};
+				}
+				return {
+					content: [{ type: "text", text: JSON.stringify({ tags: body.tags ?? [] }) }],
+				};
+			} catch (e) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({ error: "list_tags failed", details: String(e) }),
+						},
+					],
+					isError: true,
+				};
+			}
 		},
 	);
 
 	server.registerTool(
 		"search",
 		{
-			description: "Search memory by meaning. Returns relevant file snippets.",
+			description:
+				"Search memory by meaning. Returns relevant file snippets. Pass `tags` to restrict to files matching every tag.",
 			inputSchema: {
 				query: z.string().describe("Natural language query"),
 				limit: z.number().optional().default(5).describe("Max results to return"),
+				tags: z
+					.array(z.string())
+					.optional()
+					.describe("If provided, only match files tagged with all of these"),
 			},
 		},
-		async ({ query, limit }) => {
+		async ({ query, limit, tags }) => {
 			try {
 				const indexId = env.MEMORY_INDEX.idFromName("default");
 				const index = env.MEMORY_INDEX.get(indexId);
 				const response = await index.fetch(
 					new Request("http://internal/search", {
 						method: "POST",
-						body: JSON.stringify({ query, limit }),
+						body: JSON.stringify({ query, limit, tags }),
 					}),
 				);
 				const results = await response.json();
