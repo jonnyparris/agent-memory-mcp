@@ -147,7 +147,7 @@ The server exposes 20 MCP tools. Your AI assistant discovers and uses them autom
 | Tool | What it does |
 |------|-------------|
 | `read` | Read a file from memory |
-| `write` | Save a file (auto-indexes for search) |
+| `write` | Save a file (auto-indexes for search; extracts `tags:` frontmatter for filtering) |
 | `list` | List files in a directory |
 | `search` | Find memories by meaning (semantic search) |
 | `history` | See previous versions of a file |

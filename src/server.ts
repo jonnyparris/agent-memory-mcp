@@ -11,6 +11,7 @@ import { archiveReflection, listPendingReflections } from "./reflection/staging"
 import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { createR2Storage } from "./storage/r2";
+import { parseTags } from "./tags";
 import { extractSnippet, truncate } from "./truncate";
 import type { Env } from "./types";
 
@@ -67,6 +68,10 @@ export function createServer(env: Env): McpServer {
 		async ({ path, content }) => {
 			const result = await storage.write(path, content);
 
+			// Extract tags from YAML frontmatter. Obsidian-compatible: whatever
+			// tags the user writes in the file are what end up in the index.
+			const tags = parseTags(content);
+
 			// Update embeddings in Durable Object
 			let embeddingError: string | undefined;
 			try {
@@ -75,7 +80,7 @@ export function createServer(env: Env): McpServer {
 				const updateResponse = await index.fetch(
 					new Request("http://internal/update", {
 						method: "POST",
-						body: JSON.stringify({ path, content }),
+						body: JSON.stringify({ path, content, tags }),
 					}),
 				);
 				if (!updateResponse.ok) {
@@ -94,6 +99,7 @@ export function createServer(env: Env): McpServer {
 							success: true,
 							version_id: result.version_id,
 							embedding_error: embeddingError,
+							tags,
 						}),
 					},
 				],

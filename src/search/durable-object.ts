@@ -28,6 +28,18 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 			)
 		`);
 
+		// Tag index. Populated lazily by `write` via the /update endpoint.
+		// (path, tag) is the primary key so the same tag on the same file
+		// is idempotent across repeated writes.
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS file_tags (
+				path TEXT NOT NULL,
+				tag TEXT NOT NULL,
+				PRIMARY KEY (path, tag)
+			)
+		`);
+		this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag)");
+
 		// Rebuild HNSW index from stored embeddings
 		this.index = new HNSWIndex(EMBEDDING_DIMENSIONS);
 
@@ -77,12 +89,20 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 			return this.handleStats();
 		}
 
+		if (url.pathname === "/tags") {
+			return this.handleTags();
+		}
+
 		return new Response("Not Found", { status: 404 });
 	}
 
 	private async handleUpdate(request: Request): Promise<Response> {
 		try {
-			const { path, content } = (await request.json()) as { path: string; content: string };
+			const { path, content, tags } = (await request.json()) as {
+				path: string;
+				content: string;
+				tags?: string[];
+			};
 
 			// Generate embedding
 			const { vector } = await generateEmbedding(this.env.AI, content);
@@ -95,6 +115,21 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 				embeddingBlob,
 				Date.now(),
 			);
+
+			// Replace this file's tags. Tags are authoritative from the caller
+			// (the write tool parses frontmatter), so the simplest correct
+			// behaviour is delete-then-insert within a single update.
+			if (tags !== undefined) {
+				this.ctx.storage.sql.exec("DELETE FROM file_tags WHERE path = ?", path);
+				for (const tag of tags) {
+					if (!tag) continue;
+					this.ctx.storage.sql.exec(
+						"INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?, ?)",
+						path,
+						tag,
+					);
+				}
+			}
 
 			// Update HNSW index
 			if (this.index!.size() > 0) {
@@ -185,11 +220,23 @@ export class MemoryIndex extends DurableObject<DOEnv> {
 
 		// Remove from SQLite
 		this.ctx.storage.sql.exec("DELETE FROM memories WHERE path = ?", path);
+		this.ctx.storage.sql.exec("DELETE FROM file_tags WHERE path = ?", path);
 
 		// Remove from HNSW index
 		this.index!.delete(path);
 
 		return new Response(JSON.stringify({ success: true }), {
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	private handleTags(): Response {
+		const rows = [
+			...this.ctx.storage.sql.exec<{ tag: string; count: number }>(
+				"SELECT tag, COUNT(*) as count FROM file_tags GROUP BY tag ORDER BY count DESC, tag ASC",
+			),
+		];
+		return new Response(JSON.stringify({ tags: rows }), {
 			headers: { "Content-Type": "application/json" },
 		});
 	}
