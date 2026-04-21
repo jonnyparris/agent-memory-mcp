@@ -27,12 +27,56 @@ export function createServer(env: Env): McpServer {
 	server.registerTool(
 		"read",
 		{
-			description: "Read a file from memory storage",
+			description: "Read one file or up to 50 files from memory storage.",
 			inputSchema: {
-				path: z.string().describe("File path, e.g., 'memory/learnings.md'"),
+				path: z
+					.union([z.string(), z.array(z.string())])
+					.describe("File path or array of paths, e.g., 'memory/learnings.md'"),
 			},
 		},
 		async ({ path }) => {
+			if (Array.isArray(path)) {
+				if (path.length > 50) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									error: "Cannot read more than 50 paths in a single call",
+								}),
+							},
+						],
+						isError: true,
+					};
+				}
+				const files = await Promise.all(
+					path.map(async (requestedPath) => {
+						const file = await storage.read(requestedPath);
+						return [requestedPath, file] as const;
+					}),
+				);
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({
+								files: Object.fromEntries(
+									files.map(([requestedPath, file]) => [
+										requestedPath,
+										file
+											? {
+													content: truncate(file.content),
+													updated_at: file.updated_at,
+													size: file.size,
+												}
+											: { error: "File not found" },
+									]),
+								),
+							}),
+						},
+					],
+				};
+			}
 			const file = await storage.read(path);
 			if (!file) {
 				return {
