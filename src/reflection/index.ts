@@ -10,17 +10,13 @@
  * 2. Deep Analysis (Kimi K2.6): Proposes substantive changes for human review
  */
 
-import { WorkersAIProvider } from "./llm/workers-ai";
-import { type ReflectionChange, buildReflectionCard, sendChatNotification } from "./notification";
-import { type AgenticReflectionResult, runAgenticReflection } from "./reflection/agentic";
-import {
-	type StagedReflection,
-	archiveReflection,
-	writeStagedReflection,
-} from "./reflection/staging";
-import type { R2Storage } from "./storage/r2";
-import { createR2Storage } from "./storage/r2";
-import type { Env, MemoryFileMetadata } from "./types";
+import { WorkersAIProvider } from "../llm/workers-ai";
+import { type ReflectionChange, buildReflectionCard, sendChatNotification } from "../notification";
+import type { R2Storage } from "../storage/r2";
+import { createR2Storage } from "../storage/r2";
+import type { Env, MemoryFileMetadata } from "../types";
+import { type AgenticReflectionResult, runAgenticReflection } from "./agentic";
+import { type StagedReflection, archiveReflection, writeStagedReflection } from "./staging";
 
 // Meta file paths
 const LAST_REFLECTION_PATH = "memory/meta/last-reflection.json";

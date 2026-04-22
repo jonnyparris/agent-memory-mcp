@@ -8,6 +8,20 @@ interface McpToolResult {
 	};
 }
 
+/**
+ * Extract the JSON payload from a tool response's first text block.
+ *
+ * Tools may prepend a one-line human-readable summary before the JSON
+ * body. This helper pulls out the JSON regardless of whether the prefix
+ * is present — kept local to the test file so both integration suites
+ * stay self-contained. Returns `any` by default for test ergonomics.
+ */
+function parseToolJson<T = any>(text: string): T {
+	const firstBrace = text.search(/[{\[]/);
+	const json = firstBrace === -1 ? text : text.slice(firstBrace);
+	return JSON.parse(json) as T;
+}
+
 describe("read tool multi-file support", () => {
 	const authHeader = `Bearer ${env.MEMORY_AUTH_TOKEN}`;
 
@@ -17,6 +31,8 @@ describe("read tool multi-file support", () => {
 			headers: {
 				Authorization: authHeader,
 				"Content-Type": "application/json",
+				// MCP Streamable HTTP requires both JSON and SSE in Accept.
+				Accept: "application/json, text/event-stream",
 			},
 			body: JSON.stringify({
 				jsonrpc: "2.0",
@@ -39,7 +55,7 @@ describe("read tool multi-file support", () => {
 			path: "test-tools/read-multi/single-existing.md",
 		});
 
-		const content = JSON.parse(result.result.content[0].text);
+		const content = parseToolJson(result.result.content[0].text);
 		expect(result.result.isError).toBeUndefined();
 		expect(content).toMatchObject({
 			content: "single file content",
@@ -55,7 +71,7 @@ describe("read tool multi-file support", () => {
 		});
 
 		expect(result.result.isError).toBe(true);
-		expect(JSON.parse(result.result.content[0].text)).toEqual({
+		expect(parseToolJson(result.result.content[0].text)).toEqual({
 			error: "File not found",
 			path: "test-tools/read-multi/missing-single.md",
 		});
@@ -75,7 +91,7 @@ describe("read tool multi-file support", () => {
 			path: ["test-tools/read-multi/array-a.md", "test-tools/read-multi/array-b.md"],
 		});
 
-		const content = JSON.parse(result.result.content[0].text);
+		const content = parseToolJson(result.result.content[0].text);
 		expect(result.result.isError).toBeUndefined();
 		expect(content).toHaveProperty("files");
 		expect(content.files["test-tools/read-multi/array-a.md"]).toMatchObject({
@@ -98,7 +114,7 @@ describe("read tool multi-file support", () => {
 			path: ["test-tools/read-multi/mixed-existing.md", "test-tools/read-multi/mixed-missing.md"],
 		});
 
-		const content = JSON.parse(result.result.content[0].text);
+		const content = parseToolJson(result.result.content[0].text);
 		expect(result.result.isError).toBeUndefined();
 		expect(content.files["test-tools/read-multi/mixed-existing.md"]).toMatchObject({
 			content: "mixed content",
@@ -113,7 +129,7 @@ describe("read tool multi-file support", () => {
 		const result = await callTool("read", { path: [] });
 
 		expect(result.result.isError).toBeUndefined();
-		expect(JSON.parse(result.result.content[0].text)).toEqual({ files: {} });
+		expect(parseToolJson(result.result.content[0].text)).toEqual({ files: {} });
 	});
 
 	it("returns an error when more than 50 paths are requested", async () => {
@@ -122,7 +138,7 @@ describe("read tool multi-file support", () => {
 		});
 
 		expect(result.result.isError).toBe(true);
-		const content = JSON.parse(result.result.content[0].text);
+		const content = parseToolJson(result.result.content[0].text);
 		expect(content.error).toContain("50");
 	});
 
@@ -146,7 +162,7 @@ describe("read tool multi-file support", () => {
 			"test-tools/read-multi/order-second.md",
 		];
 		const result = await callTool("read", { path: paths });
-		const content = JSON.parse(result.result.content[0].text);
+		const content = parseToolJson(result.result.content[0].text);
 
 		expect(Object.keys(content.files)).toEqual(paths);
 	});

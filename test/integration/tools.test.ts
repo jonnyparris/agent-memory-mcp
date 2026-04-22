@@ -22,6 +22,29 @@ interface McpErrorResult {
 	};
 }
 
+// MCP Streamable HTTP transport requires both application/json and
+// text/event-stream in the Accept header (even for non-streaming JSON
+// responses). Centralising the header set keeps tests terse.
+const MCP_HEADERS = {
+	"Content-Type": "application/json",
+	Accept: "application/json, text/event-stream",
+} as const;
+
+/**
+ * Extract the JSON payload from a tool response's first text block.
+ *
+ * Tools may prepend a one-line human-readable summary (e.g. "Read foo.md
+ * (123 bytes)") followed by a blank line, then the JSON body. This helper
+ * pulls out the JSON regardless of whether the prefix is present. The
+ * return type defaults to `any` so integration tests stay terse — they
+ * assert on specific fields one at a time rather than mapping to a DTO.
+ */
+function parseToolJson<T = any>(text: string): T {
+	const firstBrace = text.search(/[{\[]/);
+	const json = firstBrace === -1 ? text : text.slice(firstBrace);
+	return JSON.parse(json) as T;
+}
+
 describe("MCP Tools", () => {
 	const authHeader = `Bearer ${env.MEMORY_AUTH_TOKEN}`;
 
@@ -30,7 +53,7 @@ describe("MCP Tools", () => {
 			method: "POST",
 			headers: {
 				Authorization: authHeader,
-				"Content-Type": "application/json",
+				...MCP_HEADERS,
 			},
 			body: JSON.stringify({
 				jsonrpc: "2.0",
@@ -49,7 +72,7 @@ describe("MCP Tools", () => {
 				method: "POST",
 				headers: {
 					Authorization: authHeader,
-					"Content-Type": "application/json",
+					...MCP_HEADERS,
 				},
 				body: JSON.stringify({
 					jsonrpc: "2.0",
@@ -83,7 +106,7 @@ describe("MCP Tools", () => {
 			});
 
 			expect(result.result.content).toBeDefined();
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.success).toBe(true);
 		});
 
@@ -93,7 +116,7 @@ describe("MCP Tools", () => {
 				content: "",
 			});
 
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.success).toBe(true);
 		});
 	});
@@ -111,7 +134,7 @@ describe("MCP Tools", () => {
 				path: "test-tools/read-test.md",
 			});
 
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.content).toBe("Content to read");
 			expect(content.updated_at).toBeDefined();
 		});
@@ -122,7 +145,7 @@ describe("MCP Tools", () => {
 			});
 
 			expect(result.result.isError).toBe(true);
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.error).toBe("File not found");
 		});
 	});
@@ -135,14 +158,14 @@ describe("MCP Tools", () => {
 
 			const result = await callTool("list", { path: "test-tools/list" });
 
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.files.length).toBeGreaterThanOrEqual(2);
 		});
 
 		it("should list root when no path provided", async () => {
 			const result = await callTool("list", {});
 
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(Array.isArray(content.files)).toBe(true);
 		});
 	});
@@ -153,7 +176,7 @@ describe("MCP Tools", () => {
 				code: "return 1 + 2",
 			});
 
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.result).toBe(3);
 		});
 
@@ -168,7 +191,7 @@ describe("MCP Tools", () => {
 				code: 'return await memory.read("test-tools/execute-read.md")',
 			});
 
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.result).toBe("Execute test content");
 		});
 
@@ -177,7 +200,7 @@ describe("MCP Tools", () => {
 				code: "const files = await memory.list('test-tools'); return files.length",
 			});
 
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(typeof content.result).toBe("number");
 		});
 
@@ -187,7 +210,7 @@ describe("MCP Tools", () => {
 			});
 
 			expect(result.result.isError).toBe(true);
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.error).toBe("Execution failed");
 		});
 
@@ -197,7 +220,7 @@ describe("MCP Tools", () => {
 			});
 
 			expect(result.result.isError).toBe(true);
-			const content = JSON.parse(result.result.content[0].text);
+			const content = parseToolJson(result.result.content[0].text);
 			expect(content.details).toContain("Test error");
 		});
 	});
@@ -245,7 +268,7 @@ describe("MCP Tools", () => {
 				method: "POST",
 				headers: {
 					Authorization: authHeader,
-					"Content-Type": "application/json",
+					...MCP_HEADERS,
 				},
 				body: JSON.stringify({
 					jsonrpc: "2.0",
@@ -264,7 +287,7 @@ describe("MCP Tools", () => {
 				method: "POST",
 				headers: {
 					Authorization: authHeader,
-					"Content-Type": "application/json",
+					...MCP_HEADERS,
 				},
 				body: "not valid json",
 			});

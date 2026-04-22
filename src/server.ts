@@ -7,14 +7,19 @@ import {
 	loadConversationIndex,
 } from "./conversations";
 import { executeCode } from "./execute";
-import { archiveReflection, listPendingReflections } from "./reflection/staging";
+import { errResult, okResult, registerTool } from "./helpers";
+import {
+	archiveReflection,
+	listPendingReflections,
+	readStagedReflectionData,
+} from "./reflection/staging";
 import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
+import { getMemoryIndex } from "./search/client";
+import { indexWrite } from "./search/index-write";
 import { createR2Storage } from "./storage/r2";
-import { parseTags } from "./tags";
-import { extractSnippet, truncate } from "./truncate";
+import { extractSnippet, truncateWithMeta } from "./truncate";
 import type { Env } from "./types";
-import { parseWikilinks } from "./wikilinks";
 
 export function createServer(env: Env): McpServer {
 	const server = new McpServer({
@@ -26,7 +31,8 @@ export function createServer(env: Env): McpServer {
 
 	// ==================== Core Memory Tools ====================
 
-	server.registerTool(
+	registerTool(
+		server,
 		"read",
 		{
 			description: "Read one file or up to 50 files from memory storage.",
@@ -36,126 +42,94 @@ export function createServer(env: Env): McpServer {
 					.describe("File path or array of paths, e.g., 'memory/learnings.md'"),
 			},
 		},
-		async ({ path }) => {
+		async ({ path }: { path: string | string[] }) => {
 			if (Array.isArray(path)) {
 				if (path.length > 50) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									error: "Cannot read more than 50 paths in a single call",
-								}),
-							},
-						],
-						isError: true,
-					};
+					return errResult("Cannot read more than 50 paths in a single call");
 				}
 				const files = await Promise.all(
-					path.map(async (requestedPath) => {
-						const file = await storage.read(requestedPath);
-						return [requestedPath, file] as const;
-					}),
-				);
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								files: Object.fromEntries(
-									files.map(([requestedPath, file]) => [
-										requestedPath,
-										file
-											? {
-													content: truncate(file.content),
-													updated_at: file.updated_at,
-													size: file.size,
-												}
-											: { error: "File not found" },
-									]),
-								),
-							}),
-						},
-					],
-				};
-			}
-			const file = await storage.read(path);
-			if (!file) {
-				return {
-					content: [{ type: "text", text: JSON.stringify({ error: "File not found", path }) }],
-					isError: true,
-				};
-			}
-			return {
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({
-							content: truncate(file.content),
+					path.map(async (p) => {
+						const file = await storage.read(p);
+						if (!file) return [p, { error: "File not found" }] as const;
+						const t = truncateWithMeta(file.content);
+						const entry: Record<string, unknown> = {
+							content: t.content,
 							updated_at: file.updated_at,
 							size: file.size,
-						}),
-					},
-				],
+						};
+						if (t.truncated) {
+							entry.truncated = true;
+							entry.original_size = t.original_size;
+						}
+						return [p, entry] as const;
+					}),
+				);
+				const found = files.filter(([, v]) => !("error" in v)).length;
+				return okResult({ files: Object.fromEntries(files) }, `Read ${found}/${path.length} files`);
+			}
+
+			const file = await storage.read(path);
+			if (!file) {
+				return errResult("File not found", { path });
+			}
+			const t = truncateWithMeta(file.content);
+			// Only surface truncation metadata when truncation actually
+			// happened — keeps the common-case response shape stable for
+			// clients that assert on exact keys.
+			const body: Record<string, unknown> = {
+				content: t.content,
+				updated_at: file.updated_at,
+				size: file.size,
 			};
+			if (t.truncated) {
+				body.truncated = true;
+				body.original_size = t.original_size;
+			}
+			const prefix = t.truncated
+				? `Read ${path} (${t.original_size} bytes, truncated to ${t.content.length})`
+				: `Read ${path} (${file.size} bytes)`;
+			return okResult(body, prefix);
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"write",
 		{
-			description: "Write content to a file. Automatically updates search index.",
+			description:
+				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths.",
 			inputSchema: {
 				path: z.string().describe("File path, e.g., 'memory/learnings.md'"),
 				content: z.string().describe("Content to write"),
 			},
 		},
-		async ({ path, content }) => {
-			const result = await storage.write(path, content);
-
-			// Extract tags from YAML frontmatter so they end up in the index.
-			const tags = parseTags(content);
-			// Extract Obsidian-style wikilinks so the DO can answer backlink
-			// queries later. Raw targets — we don't resolve to concrete paths.
-			const links = parseWikilinks(content);
-
-			// Update embeddings in Durable Object
-			let embeddingError: string | undefined;
-			try {
-				const indexId = env.MEMORY_INDEX.idFromName("default");
-				const index = env.MEMORY_INDEX.get(indexId);
-				const updateResponse = await index.fetch(
-					new Request("http://internal/update", {
-						method: "POST",
-						body: JSON.stringify({ path, content, tags, links }),
-					}),
-				);
-				if (!updateResponse.ok) {
-					const errorData = await updateResponse.text();
-					embeddingError = `DO returned ${updateResponse.status}: ${errorData}`;
-				}
-			} catch (e) {
-				embeddingError = String(e);
+		async ({ path, content }: { path: string; content: string }) => {
+			const result = await indexWrite(env, storage, path, content, { detectOverlaps: true });
+			const response: Record<string, unknown> = {
+				success: true,
+				version_id: result.version_id,
+				tags: result.tags,
+				links: result.links,
+			};
+			if (result.embedding_error) response.embedding_error = result.embedding_error;
+			if (result.overlaps && result.overlaps.length > 0) {
+				response.overlaps = result.overlaps;
+				response.overlap_hint =
+					"Semantically similar content already exists in the paths above. " +
+					"Consider merging or updating the existing file instead of creating redundant entries.";
 			}
 
-			return {
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({
-							success: true,
-							version_id: result.version_id,
-							embedding_error: embeddingError,
-							tags,
-							links,
-						}),
-					},
-				],
-			};
+			const parts = [`Wrote ${path} (${content.length} bytes)`];
+			if (result.tags.length > 0) parts.push(`tags: ${result.tags.join(", ")}`);
+			if (result.overlaps && result.overlaps.length > 0) {
+				parts.push(`${result.overlaps.length} similar file(s) already exist`);
+			}
+			return okResult(response, parts.join(" · "));
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"list",
 		{
 			description:
@@ -169,102 +143,46 @@ export function createServer(env: Env): McpServer {
 					.describe("If provided, only return files tagged with all of these"),
 			},
 		},
-		async ({ path, recursive, tags }) => {
+		async ({
+			path,
+			recursive,
+			tags,
+		}: {
+			path?: string;
+			recursive?: boolean;
+			tags?: string[];
+		}) => {
 			const files = await storage.list(path, recursive);
-
 			if (!tags || tags.length === 0) {
-				return {
-					content: [{ type: "text", text: JSON.stringify({ files }) }],
-				};
+				return { files };
 			}
-
-			// Ask the DO which paths match the tag intersection, then keep
-			// only the intersection of that set and the directory listing.
-			const indexId = env.MEMORY_INDEX.idFromName("default");
-			const index = env.MEMORY_INDEX.get(indexId);
-			const response = await index.fetch(
-				new Request("http://internal/files-with-tags", {
-					method: "POST",
-					body: JSON.stringify({ tags }),
-				}),
-			);
-			const body = (await response.json()) as { paths?: string[]; error?: string };
-			if (!response.ok || body.error) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								error: "Tag filter failed",
-								details: body.error ?? `DO returned ${response.status}`,
-							}),
-						},
-					],
-					isError: true,
-				};
-			}
-			const allowed = new Set(body.paths ?? []);
-			const filtered = files.filter((f: { path: string }) => allowed.has(f.path));
+			// Intersect the directory listing with the tag set from the DO.
+			const { paths } = await getMemoryIndex(env).filesWithTags(tags);
+			const allowed = new Set(paths);
 			return {
-				content: [
-					{ type: "text", text: JSON.stringify({ files: filtered, filtered_by_tags: tags }) },
-				],
+				files: files.filter((f) => allowed.has(f.path)),
+				filtered_by_tags: tags,
 			};
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"list_tags",
 		{
 			description:
 				"List all tags currently indexed, with the number of files carrying each. Sorted by count desc.",
 			inputSchema: {},
 		},
-		async () => {
-			try {
-				const indexId = env.MEMORY_INDEX.idFromName("default");
-				const index = env.MEMORY_INDEX.get(indexId);
-				const response = await index.fetch(new Request("http://internal/tags"));
-				const body = (await response.json()) as {
-					tags?: Array<{ tag: string; count: number }>;
-					error?: string;
-				};
-				if (!response.ok || body.error) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									error: "list_tags failed",
-									details: body.error ?? `DO returned ${response.status}`,
-								}),
-							},
-						],
-						isError: true,
-					};
-				}
-				return {
-					content: [{ type: "text", text: JSON.stringify({ tags: body.tags ?? [] }) }],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "list_tags failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
-		},
+		async () => getMemoryIndex(env).tags(),
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"search",
 		{
 			description:
-				"Search memory by meaning. Returns relevant file snippets. Pass `tags` to restrict to files matching every tag.",
+				"Search memory by meaning. Returns relevant file snippets. Pass `tags` to restrict to files matching every tag. Pass `scope: 'conversations'` to search indexed chat exchanges instead of memory files, or `scope: 'all'` for both.",
 			inputSchema: {
 				query: z.string().describe("Natural language query"),
 				limit: z.number().optional().default(5).describe("Max results to return"),
@@ -272,109 +190,151 @@ export function createServer(env: Env): McpServer {
 					.array(z.string())
 					.optional()
 					.describe("If provided, only match files tagged with all of these"),
+				scope: z
+					.enum(["memory", "conversations", "all"])
+					.optional()
+					.default("memory")
+					.describe("What to search. Defaults to memory files only."),
 			},
 		},
-		async ({ query, limit, tags }) => {
-			try {
-				const indexId = env.MEMORY_INDEX.idFromName("default");
-				const index = env.MEMORY_INDEX.get(indexId);
-				const response = await index.fetch(
-					new Request("http://internal/search", {
-						method: "POST",
-						body: JSON.stringify({ query, limit, tags }),
-					}),
-				);
-				const results = await response.json();
+		async ({
+			query,
+			limit,
+			tags,
+			scope,
+		}: {
+			query: string;
+			limit?: number;
+			tags?: string[];
+			scope?: "memory" | "conversations" | "all";
+		}) => {
+			const effectiveLimit = limit ?? 5;
+			const searchScope = scope ?? "memory";
 
-				// Check if DO returned an error
-				if (results && typeof results === "object" && "error" in results) {
+			// Conversations need time-weighted scoring and overshoot since the
+			// result set is filtered by path prefix after the DO returns.
+			const overshoot = searchScope === "memory" ? effectiveLimit : effectiveLimit * 2;
+			const index = getMemoryIndex(env);
+			const rawResults = await index.search({
+				query,
+				limit: overshoot,
+				tags,
+				timeWeight: searchScope !== "memory",
+			});
+
+			const memoryHits =
+				searchScope === "conversations"
+					? []
+					: rawResults.filter((r) => !r.id.startsWith("conversations/exchanges/"));
+			const conversationHits =
+				searchScope === "memory"
+					? []
+					: rawResults.filter((r) => r.id.startsWith("conversations/exchanges/"));
+
+			const enrichedMemory = await Promise.all(
+				memoryHits.slice(0, effectiveLimit).map(async (r) => {
+					const file = await storage.read(r.id);
 					return {
-						content: [{ type: "text", text: JSON.stringify(results) }],
-						isError: true,
+						path: r.id,
+						snippet: file ? extractSnippet(file.content) : "",
+						score: r.score,
 					};
-				}
+				}),
+			);
 
-				// Fetch snippets for each result
-				const resultsArray = Array.isArray(results) ? results : [];
-				const enrichedResults = await Promise.all(
-					(resultsArray as Array<{ id: string; score: number }>).map(async (r) => {
-						const file = await storage.read(r.id);
-						return {
-							path: r.id,
-							snippet: file ? extractSnippet(file.content) : "",
-							score: r.score,
-						};
-					}),
-				);
-
-				return {
-					content: [{ type: "text", text: JSON.stringify({ results: enrichedResults }) }],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Search failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
+			let enrichedConversations: Array<Record<string, unknown>> = [];
+			if (conversationHits.length > 0) {
+				const conversationIndex = await loadConversationIndex(storage);
+				enrichedConversations = conversationHits.slice(0, effectiveLimit).map((r) => {
+					const exchangeId = r.id.replace("conversations/exchanges/", "").replace(".txt", "");
+					const exchange = conversationIndex.exchanges.find((e) => e.id === exchangeId);
+					return {
+						id: exchangeId,
+						score: r.score,
+						project: exchange?.project,
+						userPrompt: exchange?.userPrompt?.slice(0, 200),
+						timestamp: exchange?.timestamp,
+						sessionId: exchange?.sessionId,
+					};
+				});
 			}
+
+			if (searchScope === "memory") {
+				return okResult(
+					{ results: enrichedMemory },
+					`Found ${enrichedMemory.length} match${enrichedMemory.length === 1 ? "" : "es"} for "${query}"`,
+				);
+			}
+			if (searchScope === "conversations") {
+				return okResult(
+					{
+						results: enrichedConversations,
+						hint: "Use expand_conversation with sessionId to see full context",
+					},
+					`Found ${enrichedConversations.length} conversation match${enrichedConversations.length === 1 ? "" : "es"} for "${query}"`,
+				);
+			}
+			return okResult(
+				{
+					memory: enrichedMemory,
+					conversations: enrichedConversations,
+					hint: "Use expand_conversation with sessionId to see full conversation context",
+				},
+				`Found ${enrichedMemory.length} memory + ${enrichedConversations.length} conversation match${enrichedMemory.length + enrichedConversations.length === 1 ? "" : "es"} for "${query}"`,
+			);
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"history",
 		{
-			description: "List previous versions of a file",
+			description:
+				"List previous versions of a file. Requires R2 bucket versioning — returns an empty list (with a hint) if versioning is disabled on the MEMORY_BUCKET.",
 			inputSchema: {
 				path: z.string().describe("File path"),
 				limit: z.number().optional().default(10).describe("Max versions to return"),
 			},
 		},
-		async ({ path, limit }) => {
+		async ({ path, limit }: { path: string; limit?: number }) => {
 			const versions = await storage.getVersions(path, limit);
-			return {
-				content: [{ type: "text", text: JSON.stringify({ versions }) }],
-			};
+			if (versions.length === 0) {
+				return {
+					versions: [],
+					versioning_enabled: false,
+					hint:
+						"No versions returned. This usually means R2 bucket versioning is " +
+						"disabled. Enable it with `wrangler r2 bucket update agent-memory " +
+						"--versioning enabled` to capture history going forward.",
+				};
+			}
+			return { versions, versioning_enabled: true };
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"rollback",
 		{
-			description: "Restore a file to a previous version",
+			description:
+				"Restore a file to a previous version. Requires R2 bucket versioning to be enabled.",
 			inputSchema: {
 				path: z.string().describe("File path"),
 				version_id: z.string().describe("Version ID to restore"),
 			},
 		},
-		async ({ path, version_id }) => {
+		async ({ path, version_id }: { path: string; version_id: string }) => {
 			const fileContent = await storage.getVersion(path, version_id);
 			if (!fileContent) {
-				return {
-					content: [{ type: "text", text: JSON.stringify({ error: "Version not found" }) }],
-					isError: true,
-				};
+				return errResult("Version not found", { path, version_id });
 			}
-
 			await storage.write(path, fileContent);
-			return {
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({
-							success: true,
-							restored_from: version_id,
-						}),
-					},
-				],
-			};
+			return { success: true, restored_from: version_id };
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"get_backlinks",
 		{
 			description:
@@ -385,161 +345,96 @@ export function createServer(env: Env): McpServer {
 					.describe("Wikilink target as written inside [[...]], e.g. 'memory/learnings'"),
 			},
 		},
-		async ({ target }) => {
-			try {
-				const indexId = env.MEMORY_INDEX.idFromName("default");
-				const index = env.MEMORY_INDEX.get(indexId);
-				const response = await index.fetch(
-					new Request(`http://internal/backlinks?target=${encodeURIComponent(target)}`),
-				);
-				const body = (await response.json()) as { backlinks?: string[]; error?: string };
-				if (!response.ok || body.error) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									error: "get_backlinks failed",
-									details: body.error ?? `DO returned ${response.status}`,
-								}),
-							},
-						],
-						isError: true,
-					};
-				}
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ target, backlinks: body.backlinks ?? [] }),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "get_backlinks failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
+		async ({ target }: { target: string }) => {
+			const { backlinks } = await getMemoryIndex(env).backlinks(target);
+			return { target, backlinks };
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"execute",
 		{
-			description: "Execute JavaScript code against memory contents. Use for complex queries.",
+			description:
+				"Execute a JavaScript async function against memory contents for complex queries. " +
+				"The function receives `memory.read(path)` and `memory.list(path?)` and must return a value. " +
+				"SECURITY: code runs inside the Worker's V8 isolate with access to globals like `fetch`, `crypto`, " +
+				"and network I/O. Only use with trusted input — this is not a sandbox against malicious code. " +
+				"Execution is bounded by the Worker's CPU limits; set a timeout in your own code for long queries.",
 			inputSchema: {
 				code: z
 					.string()
-					.describe("Async arrow function with access to memory.read(), memory.list()"),
+					.describe(
+						"Body of an async function. Has access to `memory.read(path)` and `memory.list(path?)`. Return a value.",
+					),
 			},
 		},
-		async ({ code }) => {
-			// Create sandboxed memory API
+		async ({ code }: { code: string }) => {
 			const memoryApi = {
 				read: async (filePath: string) => {
 					const file = await storage.read(filePath);
 					return file?.content ?? null;
 				},
-				list: async (filePath?: string) => {
-					return storage.list(filePath, true);
-				},
+				list: async (filePath?: string) => storage.list(filePath, true),
 			};
-
-			const result = await executeCode(code, memoryApi);
-			return {
-				content: result.content,
-				isError: result.isError,
-			};
+			return executeCode(code, memoryApi);
 		},
 	);
 
 	// ==================== Conversation Tools ====================
 
-	server.registerTool(
+	// `search_conversations` remains as a thin compatibility alias over
+	// `search` so existing MCP clients don't break. New clients should use
+	// `search({ scope: "conversations" })`.
+	registerTool(
+		server,
 		"search_conversations",
 		{
 			description:
-				"Search past conversations for similar problems/solutions. Uses time-weighted scoring (recent = higher).",
+				"Search past conversations by meaning. Prefer `search({ scope: 'conversations' })` in new code.",
 			inputSchema: {
 				query: z.string().describe("What to search for, e.g., 'TypeScript errors', 'API design'"),
 				limit: z.number().optional().default(5).describe("Max results to return"),
 			},
 		},
-		async ({ query, limit }) => {
-			try {
-				const conversationIndex = await loadConversationIndex(storage);
-				if (conversationIndex.exchanges.length === 0) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [],
-									message: "No conversations indexed yet. Use index_conversations to sync.",
-								}),
-							},
-						],
-					};
-				}
-
-				const indexId = env.MEMORY_INDEX.idFromName("default");
-				const index = env.MEMORY_INDEX.get(indexId);
-				const response = await index.fetch(
-					new Request("http://internal/search", {
-						method: "POST",
-						body: JSON.stringify({ query, limit: (limit ?? 5) * 2, timeWeight: true }),
-					}),
-				);
-				const rawResults = (await response.json()) as Array<{ id: string; score: number }>;
-
-				const conversationResults = rawResults
-					.filter((r) => r.id.startsWith("conversations/exchanges/"))
-					.slice(0, limit ?? 5)
-					.map((r) => {
-						const exchangeId = r.id.replace("conversations/exchanges/", "").replace(".txt", "");
-						const exchange = conversationIndex.exchanges.find((e) => e.id === exchangeId);
-						return {
-							id: exchangeId,
-							score: r.score,
-							project: exchange?.project,
-							userPrompt: exchange?.userPrompt?.slice(0, 200),
-							timestamp: exchange?.timestamp,
-							sessionId: exchange?.sessionId,
-						};
-					});
-
+		async ({ query, limit }: { query: string; limit?: number }) => {
+			const conversationIndex = await loadConversationIndex(storage);
+			if (conversationIndex.exchanges.length === 0) {
 				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								results: conversationResults,
-								hint: "Use expand_conversation with sessionId to see full context",
-							}),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Search failed", details: String(e) }),
-						},
-					],
-					isError: true,
+					results: [],
+					message: "No conversations indexed yet. Use index_conversations to sync.",
 				};
 			}
+			const effectiveLimit = limit ?? 5;
+			const rawResults = await getMemoryIndex(env).search({
+				query,
+				limit: effectiveLimit * 2,
+				timeWeight: true,
+			});
+			const results = rawResults
+				.filter((r) => r.id.startsWith("conversations/exchanges/"))
+				.slice(0, effectiveLimit)
+				.map((r) => {
+					const exchangeId = r.id.replace("conversations/exchanges/", "").replace(".txt", "");
+					const exchange = conversationIndex.exchanges.find((e) => e.id === exchangeId);
+					return {
+						id: exchangeId,
+						score: r.score,
+						project: exchange?.project,
+						userPrompt: exchange?.userPrompt?.slice(0, 200),
+						timestamp: exchange?.timestamp,
+						sessionId: exchange?.sessionId,
+					};
+				});
+			return {
+				results,
+				hint: "Use expand_conversation with sessionId to see full context",
+			};
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"index_conversations",
 		{
 			description:
@@ -556,65 +451,48 @@ export function createServer(env: Env): McpServer {
 					.describe("Array of session objects to index"),
 			},
 		},
-		async ({ sessions }) => {
-			try {
-				const result = await indexSessions(
-					storage,
-					sessions.map((s) => ({
-						sessionId: s.sessionId,
-						project: s.project,
-						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						data: s.data as any,
-					})),
-				);
+		async ({
+			sessions,
+		}: {
+			sessions: Array<{ sessionId: string; project: string; data: Record<string, unknown> }>;
+		}) => {
+			const result = await indexSessions(
+				storage,
+				sessions.map((s) => ({
+					sessionId: s.sessionId,
+					project: s.project,
+					// The session JSON shape is defined by whatever client produced
+					// it; we validate structurally inside `indexSessions` so the
+					// unknown-record cast here is safe.
+					data: s.data as unknown as Parameters<typeof indexSessions>[1][number]["data"],
+				})),
+			);
 
-				const conversationIndex = await loadConversationIndex(storage);
-				const indexId = env.MEMORY_INDEX.idFromName("default");
-				const index = env.MEMORY_INDEX.get(indexId);
-
-				let indexed = 0;
-				for (const exchange of conversationIndex.exchanges) {
-					const content = `[${exchange.project}] ${exchange.userPrompt}\n\nResponse: ${exchange.assistantResponse}`;
-					const path = `conversations/exchanges/${exchange.id}.txt`;
-
-					await index.fetch(
-						new Request("http://internal/update", {
-							method: "POST",
-							body: JSON.stringify({ path, content }),
-						}),
-					);
-					indexed++;
-				}
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								success: true,
-								added: result.added,
-								updated: result.updated,
-								unchanged: result.unchanged,
-								totalIndexed: indexed,
-							}),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Indexing failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
+			// Push each exchange into the semantic index. Runs sequentially so
+			// we don't blow past Workers AI rate limits on large imports.
+			const conversationIndex = await loadConversationIndex(storage);
+			const index = getMemoryIndex(env);
+			let indexed = 0;
+			for (const exchange of conversationIndex.exchanges) {
+				const content = `[${exchange.project}] ${exchange.userPrompt}\n\nResponse: ${exchange.assistantResponse}`;
+				await index.update({
+					path: `conversations/exchanges/${exchange.id}.txt`,
+					content,
+				});
+				indexed++;
 			}
+			return {
+				success: true,
+				added: result.added,
+				updated: result.updated,
+				unchanged: result.unchanged,
+				totalIndexed: indexed,
+			};
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"expand_conversation",
 		{
 			description: "Load full context from a past conversation session.",
@@ -623,61 +501,29 @@ export function createServer(env: Env): McpServer {
 				exchangeId: z.string().optional().describe("Specific exchange ID to center on"),
 			},
 		},
-		async ({ sessionId, exchangeId }) => {
-			try {
-				const result = await expandConversation(storage, sessionId, exchangeId);
-				if (!result) {
-					return {
-						content: [{ type: "text", text: JSON.stringify({ error: "Session not found" }) }],
-						isError: true,
-					};
-				}
-				return {
-					content: [{ type: "text", text: JSON.stringify(result) }],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Expand failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
+		async ({ sessionId, exchangeId }: { sessionId: string; exchangeId?: string }) => {
+			const result = await expandConversation(storage, sessionId, exchangeId);
+			if (!result) {
+				return errResult("Session not found", { sessionId });
 			}
+			return result as Record<string, unknown>;
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"conversation_stats",
 		{
 			description: "Get statistics about indexed conversations.",
 			inputSchema: {},
 		},
-		async () => {
-			try {
-				const stats = await getConversationStats(storage);
-				return {
-					content: [{ type: "text", text: JSON.stringify(stats) }],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Stats failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
-		},
+		async () => (await getConversationStats(storage)) as Record<string, unknown>,
 	);
 
 	// ==================== Reminder Tools ====================
 
-	server.registerTool(
+	registerTool(
+		server,
 		"schedule_reminder",
 		{
 			description:
@@ -693,101 +539,41 @@ export function createServer(env: Env): McpServer {
 				model: z.string().optional().describe("Optional model hint for client"),
 			},
 		},
-		async ({ id, type, expression, description, payload, model }) => {
-			try {
-				const reminder = await scheduleReminder(storage, {
-					id,
-					type,
-					expression,
-					description,
-					payload,
-					model,
-				});
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ success: true, reminder }),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Failed to schedule", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
+		async (args: {
+			id: string;
+			type: "cron" | "once";
+			expression: string;
+			description: string;
+			payload: string;
+			model?: string;
+		}) => {
+			const reminder = await scheduleReminder(storage, args);
+			return { success: true, reminder };
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"list_reminders",
-		{
-			description: "List all scheduled reminders.",
-			inputSchema: {},
-		},
-		async () => {
-			try {
-				const reminders = await listReminders(storage);
-				return {
-					content: [{ type: "text", text: JSON.stringify({ reminders }) }],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "List failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
-		},
+		{ description: "List all scheduled reminders.", inputSchema: {} },
+		async () => ({ reminders: await listReminders(storage) }),
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"remove_reminder",
 		{
 			description: "Remove a scheduled reminder.",
-			inputSchema: {
-				id: z.string().describe("ID of the reminder to remove"),
-			},
+			inputSchema: { id: z.string().describe("ID of the reminder to remove") },
 		},
-		async ({ id }) => {
-			try {
-				const removed = await removeReminder(storage, id);
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								success: removed,
-								message: removed ? "Removed" : "Not found",
-							}),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Remove failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
+		async ({ id }: { id: string }) => {
+			const removed = await removeReminder(storage, id);
+			return { success: removed, message: removed ? "Removed" : "Not found" };
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"check_reminders",
 		{
 			description:
@@ -795,82 +581,43 @@ export function createServer(env: Env): McpServer {
 			inputSchema: {},
 		},
 		async () => {
-			try {
-				const fired = await checkReminders(storage);
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								fired,
-								count: fired.length,
-								hint:
-									fired.length > 0
-										? "Process these reminders based on their payload"
-										: "No reminders to process",
-							}),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Check failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
+			const fired = await checkReminders(storage);
+			return {
+				fired,
+				count: fired.length,
+				hint:
+					fired.length > 0
+						? "Process these reminders based on their payload"
+						: "No reminders to process",
+			};
 		},
 	);
 
 	// ==================== Reflection Tools ====================
 
-	server.registerTool(
+	registerTool(
+		server,
 		"list_pending_reflections",
-		{
-			description: "List pending reflection files awaiting review.",
-			inputSchema: {},
-		},
+		{ description: "List pending reflection files awaiting review.", inputSchema: {} },
 		async () => {
-			try {
-				const pending = await listPendingReflections(storage);
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								pending,
-								count: pending.length,
-								hint:
-									pending.length > 0
-										? "Use read to view details, apply_reflection_changes to apply proposed edits"
-										: "No pending reflections",
-							}),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "List failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
-			}
+			const pending = await listPendingReflections(storage);
+			return {
+				pending,
+				count: pending.length,
+				hint:
+					pending.length > 0
+						? "Use read to view details, apply_reflection_changes to apply proposed edits"
+						: "No pending reflections",
+			};
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"apply_reflection_changes",
 		{
 			description:
-				"Apply proposed changes from a reflection. Reads the pending file, applies specified edits, and optionally archives the reflection.",
+				"Apply proposed changes from a reflection. Reads the structured JSON sidecar (preferred) or falls back to parsing the markdown, applies specified edits, and optionally archives the reflection.",
 			inputSchema: {
 				date: z.string().describe("Date of the reflection (YYYY-MM-DD)"),
 				editIndices: z
@@ -884,132 +631,99 @@ export function createServer(env: Env): McpServer {
 					.describe("Archive the reflection after applying"),
 			},
 		},
-		async ({ date, editIndices, archive }) => {
-			try {
-				const pendingPath = `memory/reflections/pending/${date}.md`;
+		async ({
+			date,
+			editIndices,
+			archive = true,
+		}: {
+			date: string;
+			editIndices?: number[];
+			archive?: boolean;
+		}) => {
+			const pendingPath = `memory/reflections/pending/${date}.md`;
+
+			// Prefer the structured JSON sidecar. Fall back to parsing the
+			// markdown for older reflections that predate the sidecar.
+			let edits: ProposedEdit[];
+			const sidecar = await readStagedReflectionData(storage, date);
+			if (sidecar) {
+				edits = sidecar.proposedEdits;
+			} else {
 				const file = await storage.read(pendingPath);
-
 				if (!file) {
-					return {
-						content: [
-							{ type: "text", text: JSON.stringify({ error: "Reflection not found", date }) },
-						],
-						isError: true,
-					};
+					return errResult("Reflection not found", { date });
 				}
+				edits = parseProposedEditsFromMarkdown(file.content);
+			}
 
-				// Parse proposed edits from the markdown
-				const edits = parseProposedEdits(file.content);
-
-				if (edits.length === 0) {
-					// No edits to apply, just archive if requested
-					if (archive) {
-						await archiveReflection(storage, pendingPath);
-					}
-					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									success: true,
-									message: "No proposed edits to apply",
-									archived: archive,
-								}),
-							},
-						],
-					};
-				}
-
-				// Filter to requested indices (1-indexed)
-				const toApply = editIndices ? edits.filter((_, i) => editIndices.includes(i + 1)) : edits;
-
-				// Apply each edit
-				const results: Array<{ path: string; action: string; success: boolean; error?: string }> =
-					[];
-
-				for (const edit of toApply) {
-					try {
-						switch (edit.action) {
-							case "replace":
-							case "create":
-								if (edit.content) {
-									await storage.write(edit.path, edit.content);
-									// Update search index
-									const indexId = env.MEMORY_INDEX.idFromName("default");
-									const index = env.MEMORY_INDEX.get(indexId);
-									await index.fetch(
-										new Request("http://internal/update", {
-											method: "POST",
-											body: JSON.stringify({ path: edit.path, content: edit.content }),
-										}),
-									);
-								}
-								results.push({ path: edit.path, action: edit.action, success: true });
-								break;
-
-							case "append":
-								if (edit.content) {
-									const existing = await storage.read(edit.path);
-									const newContent = existing
-										? `${existing.content}\n${edit.content}`
-										: edit.content;
-									await storage.write(edit.path, newContent);
-								}
-								results.push({ path: edit.path, action: edit.action, success: true });
-								break;
-
-							case "delete":
-								await storage.delete(edit.path);
-								results.push({ path: edit.path, action: edit.action, success: true });
-								break;
-						}
-					} catch (e) {
-						results.push({
-							path: edit.path,
-							action: edit.action,
-							success: false,
-							error: String(e),
-						});
-					}
-				}
-
-				// Archive if requested and all succeeded
-				const allSucceeded = results.every((r) => r.success);
-				let archived = false;
-				if (archive && allSucceeded) {
+			if (edits.length === 0) {
+				if (archive) {
 					await archiveReflection(storage, pendingPath);
-					archived = true;
 				}
-
 				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								success: allSucceeded,
-								applied: results.filter((r) => r.success).length,
-								failed: results.filter((r) => !r.success).length,
-								results,
-								archived,
-							}),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Apply failed", details: String(e) }),
-						},
-					],
-					isError: true,
+					success: true,
+					message: "No proposed edits to apply",
+					archived: archive,
 				};
 			}
+
+			// 1-indexed to match the numbering in the rendered markdown.
+			const toApply = editIndices ? edits.filter((_, i) => editIndices.includes(i + 1)) : edits;
+
+			const results: Array<{ path: string; action: string; success: boolean; error?: string }> = [];
+			for (const edit of toApply) {
+				try {
+					switch (edit.action) {
+						case "replace":
+						case "create":
+							if (edit.content) {
+								await indexWrite(env, storage, edit.path, edit.content);
+							}
+							results.push({ path: edit.path, action: edit.action, success: true });
+							break;
+						case "append":
+							if (edit.content) {
+								const existing = await storage.read(edit.path);
+								const newContent = existing ? `${existing.content}\n${edit.content}` : edit.content;
+								await indexWrite(env, storage, edit.path, newContent);
+							}
+							results.push({ path: edit.path, action: edit.action, success: true });
+							break;
+						case "delete":
+							await storage.delete(edit.path);
+							await getMemoryIndex(env).delete(edit.path);
+							results.push({ path: edit.path, action: edit.action, success: true });
+							break;
+					}
+				} catch (e) {
+					results.push({
+						path: edit.path,
+						action: edit.action,
+						success: false,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				}
+			}
+
+			const allSucceeded = results.every((r) => r.success);
+			let archived = false;
+			if (archive && allSucceeded) {
+				await archiveReflection(storage, pendingPath);
+				archived = true;
+			}
+
+			return {
+				success: allSucceeded,
+				applied: results.filter((r) => r.success).length,
+				failed: results.filter((r) => !r.success).length,
+				results,
+				archived,
+			};
 		},
 	);
 
-	server.registerTool(
+	registerTool(
+		server,
 		"archive_reflection",
 		{
 			description: "Archive a pending reflection without applying changes (mark as reviewed).",
@@ -1017,42 +731,13 @@ export function createServer(env: Env): McpServer {
 				date: z.string().describe("Date of the reflection (YYYY-MM-DD)"),
 			},
 		},
-		async ({ date }) => {
-			try {
-				const pendingPath = `memory/reflections/pending/${date}.md`;
-				const archivePath = await archiveReflection(storage, pendingPath);
-
-				if (!archivePath) {
-					return {
-						content: [
-							{ type: "text", text: JSON.stringify({ error: "Reflection not found", date }) },
-						],
-						isError: true,
-					};
-				}
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								success: true,
-								archivedTo: archivePath,
-							}),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({ error: "Archive failed", details: String(e) }),
-						},
-					],
-					isError: true,
-				};
+		async ({ date }: { date: string }) => {
+			const pendingPath = `memory/reflections/pending/${date}.md`;
+			const archivePath = await archiveReflection(storage, pendingPath);
+			if (!archivePath) {
+				return errResult("Reflection not found", { date });
 			}
+			return { success: true, archivedTo: archivePath };
 		},
 	);
 
@@ -1060,12 +745,15 @@ export function createServer(env: Env): McpServer {
 }
 
 /**
- * Parse proposed edits from a reflection markdown file
+ * Fallback parser for reflections without a JSON sidecar.
+ *
+ * Matches sections like `### 1. REPLACE: memory/learnings.md` followed by a
+ * Reason line and an optional fenced code block. Kept for backwards compat
+ * with reflections staged before the JSON sidecar was introduced — new
+ * reflections are applied directly from the structured JSON.
  */
-function parseProposedEdits(content: string): ProposedEdit[] {
+function parseProposedEditsFromMarkdown(content: string): ProposedEdit[] {
 	const edits: ProposedEdit[] = [];
-
-	// Match sections like: ### 1. REPLACE: memory/learnings.md
 	const editPattern =
 		/###\s*\d+\.\s*(REPLACE|APPEND|DELETE|CREATE):\s*(\S+)\s*\n\n\*\*Reason:\*\*\s*([^\n]+)\n(?:\n\*\*Content:\*\*\n```\n([\s\S]*?)\n```)?/g;
 
@@ -1078,6 +766,5 @@ function parseProposedEdits(content: string): ProposedEdit[] {
 			content: editContent,
 		});
 	}
-
 	return edits;
 }

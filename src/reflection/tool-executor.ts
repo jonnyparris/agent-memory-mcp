@@ -6,6 +6,7 @@
  */
 
 import type { LLMToolCall } from "../llm/types";
+import { getMemoryIndex } from "../search/client";
 import type { R2Storage } from "../storage/r2";
 import type { Env } from "../types";
 
@@ -139,29 +140,13 @@ async function executeSearch(
 	const limit = Math.min(args.limit ?? 5, 20);
 
 	try {
-		const indexId = context.env.MEMORY_INDEX.idFromName("default");
-		const index = context.env.MEMORY_INDEX.get(indexId);
-
-		const response = await index.fetch(
-			new Request("http://internal/search", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ query: args.query, limit }),
-			}),
-		);
-
-		if (!response.ok) {
-			const errorText = await response.text();
-			return { success: false, error: `Search failed: ${errorText}` };
-		}
-
-		const results = await response.json();
+		const results = await getMemoryIndex(context.env).search({ query: args.query, limit });
 		return {
 			success: true,
 			result: {
 				query: args.query,
 				matches: results,
-				count: Array.isArray(results) ? results.length : 0,
+				count: results.length,
 			},
 		};
 	} catch (e) {
@@ -240,22 +225,7 @@ async function executeGetBacklinks(
 	}
 
 	try {
-		const indexId = context.env.MEMORY_INDEX.idFromName("default");
-		const index = context.env.MEMORY_INDEX.get(indexId);
-		const response = await index.fetch(
-			new Request(`http://internal/backlinks?target=${encodeURIComponent(args.target)}`),
-		);
-		if (!response.ok) {
-			return {
-				success: false,
-				error: `Backlinks lookup failed: ${await response.text()}`,
-			};
-		}
-		const body = (await response.json()) as { backlinks?: string[]; error?: string };
-		if (body.error) {
-			return { success: false, error: body.error };
-		}
-		const backlinks = body.backlinks ?? [];
+		const { backlinks } = await getMemoryIndex(context.env).backlinks(args.target);
 		return {
 			success: true,
 			result: {

@@ -106,9 +106,14 @@ describe("R2 Storage", () => {
 		it("should list root when no path provided", async () => {
 			await storage.write("test/root-test.md", "Root content");
 
+			// Non-recursive root list returns top-level entries — files at
+			// depth > 0 appear as delimited prefixes (e.g. "test/") rather
+			// than the full file path. Use recursive=true to walk the tree.
 			const files = await storage.list();
+			expect(files.some((f) => f.path === "test/")).toBe(true);
 
-			expect(files.some((f) => f.path.includes("test/root-test.md"))).toBe(true);
+			const recursive = await storage.list("", true);
+			expect(recursive.some((f) => f.path === "test/root-test.md")).toBe(true);
 		});
 
 		it("should include file metadata", async () => {
