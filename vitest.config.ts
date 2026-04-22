@@ -11,6 +11,13 @@ import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config";
  *
  * Unit tests run in the same pool. They don't need the Worker runtime but
  * using one pool config keeps the surface area small.
+ *
+ * Note: bindings are declared here explicitly rather than via
+ * `wrangler.configPath`, because reading wrangler.jsonc would also pull in
+ * the `ai` binding, which the pool treats as remote — that fails in CI
+ * without a Cloudflare API token. The AI binding is stubbed below so unit
+ * tests that indirectly touch it (via embedding generation in `update`)
+ * don't hit the network.
  */
 export default defineWorkersConfig({
 	test: {
@@ -21,6 +28,7 @@ export default defineWorkersConfig({
 		poolOptions: {
 			workers: {
 				singleWorker: true,
+				main: "./src/index.ts",
 				miniflare: {
 					compatibilityDate: "2025-01-29",
 					compatibilityFlags: ["nodejs_compat"],
@@ -30,22 +38,22 @@ export default defineWorkersConfig({
 						MEMORY_AUTH_TOKEN: "test-token",
 					},
 					r2Buckets: ["MEMORY_BUCKET"],
-					// Wire the DO as a SQLite-backed class (matches the
-					// `new_sqlite_classes` migration in wrangler.jsonc) so
-					// the DO's `ensureReady` can run `ctx.storage.sql.exec`
-					// without blowing up with "SQL is not enabled".
+					// SQLite-backed DO (matches the `new_sqlite_classes`
+					// migration in wrangler.jsonc).
 					durableObjects: {
 						MEMORY_INDEX: {
 							className: "MemoryIndex",
 							useSQLite: true,
 						},
 					},
-				},
-				// Point the pool at the Worker entry — the pool handles TS
-				// transpilation itself, so a plain `.ts` path is fine.
-				main: "./src/index.ts",
-				wrangler: {
-					configPath: "./wrangler.jsonc",
+					// The `AI` binding deliberately isn't wired up here. Unit
+					// tests don't reach real AI calls (storage and DO are
+					// mocked). Integration tests that do exercise write +
+					// search paths currently don't assert on embedding
+					// content — they just verify the DO accepts the call.
+					// If an integration test starts failing on AI, it means
+					// it's asserting something that needs a real embedding,
+					// and we should mock it at the test level.
 				},
 			},
 		},
