@@ -1,3 +1,19 @@
+/**
+ * Worker entrypoint.
+ *
+ * Routes:
+ *   GET  /health   — public, returns server version. No auth.
+ *   POST /reflect  — REST, auth required. Manually triggers a reflection
+ *                    run. Returns a JSON ReflectionResult, NOT JSON-RPC.
+ *   ANY  /mcp      — MCP Streamable HTTP transport, auth required. Serves
+ *                    the full MCP tool surface (read/write/search/etc).
+ *                    All responses are JSON-RPC 2.0.
+ *
+ * The scheduled handler runs the daily reflection at 6am UTC (see
+ * wrangler.jsonc crons). The Durable Object class export wires
+ * `MEMORY_INDEX` — see `src/search/durable-object.ts`.
+ */
+
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { unauthorizedResponse, validateAuth } from "./auth";
 import { runReflection } from "./reflection";
@@ -31,7 +47,7 @@ export default {
 
 		// Manual reflection trigger (requires auth)
 		if (url.pathname === "/reflect" && request.method === "POST") {
-			const authResult = validateAuth(request, env);
+			const authResult = await validateAuth(request, env);
 			if (!authResult.authorized) {
 				return unauthorizedResponse(authResult.error!);
 			}
@@ -44,8 +60,7 @@ export default {
 
 		// MCP endpoint
 		if (url.pathname === "/mcp") {
-			// Validate auth
-			const authResult = validateAuth(request, env);
+			const authResult = await validateAuth(request, env);
 			if (!authResult.authorized) {
 				return unauthorizedResponse(authResult.error!);
 			}
@@ -67,18 +82,20 @@ export default {
 	},
 
 	/**
-	 * Scheduled handler for daily reflection
-	 * Triggered by cron at 6am UTC daily
+	 * Scheduled handler for daily reflection.
+	 *
+	 * Triggered by the cron at 6am UTC. Awaits the reflection directly
+	 * rather than using `ctx.waitUntil` — cron handlers already keep the
+	 * invocation alive until the promise resolves, and awaiting surfaces
+	 * rejections as actual scheduled-handler failures (visible in the
+	 * Cloudflare dashboard) instead of being swallowed inside `then()`.
 	 */
-	async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-		ctx.waitUntil(
-			runReflection(env).then((result) => {
-				if (result.success) {
-					console.log(`Reflection completed for ${result.date}: ${result.summary}`);
-				} else {
-					console.error(`Reflection failed for ${result.date}: ${result.error}`);
-				}
-			}),
-		);
+	async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+		const result = await runReflection(env);
+		if (result.success) {
+			console.log(`Reflection completed for ${result.date}: ${result.summary}`);
+		} else {
+			console.error(`Reflection failed for ${result.date}: ${result.error}`);
+		}
 	},
 };

@@ -7,7 +7,7 @@
 	},
 	"files": {
 		"ignoreUnknown": false,
-		"ignore": ["node_modules", "dist", ".wrangler"]
+		"ignore": ["node_modules", "dist", ".wrangler", "worker-configuration.d.ts"]
 	},
 	"formatter": {
 		"enabled": true,
@@ -29,7 +29,7 @@
 				"noParameterAssign": "off"
 			},
 			"suspicious": {
-				"noExplicitAny": "off"
+				"noExplicitAny": "warn"
 			}
 		}
 	},

@@ -18,6 +18,8 @@ describeE2E("E2E: Deployed Worker", () => {
 			headers: {
 				Authorization: `Bearer ${AUTH_TOKEN}`,
 				"Content-Type": "application/json",
+				// MCP Streamable HTTP requires both JSON and SSE in Accept.
+				Accept: "application/json, text/event-stream",
 			},
 			body: JSON.stringify({
 				jsonrpc: "2.0",

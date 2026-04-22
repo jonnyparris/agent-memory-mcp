@@ -154,7 +154,7 @@ The server exposes 22 MCP tools. Your AI assistant discovers and uses them autom
 | `history` | See previous versions of a file |
 | `rollback` | Restore a file to an earlier version |
 | `get_backlinks` | List files that link to a target via `[[wikilinks]]` |
-| `execute` | Run JavaScript queries against your memory |
+| `execute` | Run JavaScript queries against your memory ([trust notes](#the-execute-tool)) |
 
 ### Conversations
 
@@ -226,6 +226,23 @@ You get a notification summary after each run. You can also trigger it manually:
 curl -X POST "https://your-worker.workers.dev/reflect" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
+
+---
+
+## The `execute` tool
+
+The `execute` tool runs arbitrary JavaScript against your memory. It's fast and convenient for complex queries (group files by tag, aggregate word counts, etc.) but it's **not a sandbox**:
+
+- Code runs in the same V8 isolate as the Worker.
+- It has access to global `fetch`, `crypto`, and other Web APIs.
+- It runs with the Worker's CPU limit as the only time bound (plus a 10s wall-clock timeout from the tool).
+- It does NOT have access to `env` bindings, your auth token, or other secrets — those never touch the global scope.
+
+Guidance:
+
+1. Only use `execute` when you trust who's calling it. The auth token protects the MCP endpoint; anyone with the token can run code.
+2. Don't expose this MCP to untrusted users without stripping the `execute` tool first.
+3. Use `search` + `read` instead when you can — they're safer and usually faster.
 
 ---
 

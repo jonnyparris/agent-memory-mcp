@@ -24,18 +24,50 @@ export interface StagedReflection {
 }
 
 /**
- * Write a staged reflection file for human review
- * @returns The path to the staged file
+ * Write a staged reflection for human review.
+ *
+ * Writes two files:
+ *   1. `{date}.md` — human-readable markdown with tables and prose
+ *   2. `{date}.json` — structured sidecar that `apply_reflection_changes`
+ *      uses to apply edits. Keeps the machine-readable shape decoupled
+ *      from the markdown layout so the reflection writeup can be edited
+ *      by humans without breaking the apply step.
+ *
+ * @returns The path to the markdown file (the sidecar path is derived by
+ *          swapping the extension).
  */
 export async function writeStagedReflection(
 	storage: R2Storage,
 	reflection: StagedReflection,
 ): Promise<string> {
-	const content = buildStagedContent(reflection);
-	const path = `${PENDING_DIR}/${reflection.date}.md`;
+	const markdownPath = `${PENDING_DIR}/${reflection.date}.md`;
+	const jsonPath = `${PENDING_DIR}/${reflection.date}.json`;
 
-	await storage.write(path, content);
-	return path;
+	await storage.write(markdownPath, buildStagedContent(reflection));
+	await storage.write(jsonPath, JSON.stringify(reflection, null, 2));
+
+	return markdownPath;
+}
+
+/**
+ * Read the structured sidecar for a pending reflection.
+ *
+ * Returns null if the sidecar is missing (e.g. legacy reflections from
+ * before the sidecar was added). Callers should fall back to markdown
+ * parsing in that case.
+ */
+export async function readStagedReflectionData(
+	storage: R2Storage,
+	date: string,
+): Promise<StagedReflection | null> {
+	const jsonPath = `${PENDING_DIR}/${date}.json`;
+	const file = await storage.read(jsonPath);
+	if (!file) return null;
+	try {
+		return JSON.parse(file.content) as StagedReflection;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -192,7 +224,11 @@ export async function listPendingReflections(
 }
 
 /**
- * Archive a pending reflection (move from pending to archive)
+ * Archive a pending reflection (move from pending to archive).
+ *
+ * Moves both the markdown and the structured JSON sidecar if present. The
+ * JSON sidecar was added in 2026 — older pending reflections may only have
+ * the markdown, which is fine.
  */
 export async function archiveReflection(
 	storage: R2Storage,
@@ -203,15 +239,24 @@ export async function archiveReflection(
 		return null;
 	}
 
-	// Extract date from path
 	const match = pendingPath.match(/(\d{4}-\d{2}-\d{2})\.md$/);
 	if (!match) {
 		return null;
 	}
 
-	const archivePath = `memory/reflections/archive/${match[1]}.md`;
+	const date = match[1];
+	const archivePath = `memory/reflections/archive/${date}.md`;
 	await storage.write(archivePath, file.content);
 	await storage.delete(pendingPath);
+
+	// Move the JSON sidecar too, if it exists. Don't fail archiving if the
+	// sidecar is missing — it's optional for backwards compat.
+	const jsonSource = `${PENDING_DIR}/${date}.json`;
+	const jsonSidecar = await storage.read(jsonSource);
+	if (jsonSidecar) {
+		await storage.write(`memory/reflections/archive/${date}.json`, jsonSidecar.content);
+		await storage.delete(jsonSource);
+	}
 
 	return archivePath;
 }

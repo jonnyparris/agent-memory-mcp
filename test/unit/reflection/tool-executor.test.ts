@@ -12,19 +12,18 @@ describe("executeReflectionTool", () => {
 
 	beforeEach(() => {
 		mockStorage = createMockStorage();
+		// Production code calls `getMemoryIndex(env).search(...)`. The DO stub
+		// exposes RPC methods directly, so the mock returns an object with
+		// those methods rather than the old fetch-shaped shim.
 		context = createExecutionContext(mockStorage, {
 			MEMORY_BUCKET: {} as any,
 			MEMORY_INDEX: {
 				idFromName: vi.fn().mockReturnValue("test-id"),
 				get: vi.fn().mockReturnValue({
-					fetch: vi.fn().mockResolvedValue({
-						ok: true,
-						json: () =>
-							Promise.resolve([
-								{ path: "memory/learnings.md", score: 0.9 },
-								{ path: "memory/projects.md", score: 0.8 },
-							]),
-					}),
+					search: vi.fn().mockResolvedValue([
+						{ id: "memory/learnings.md", score: 0.9 },
+						{ id: "memory/projects.md", score: 0.8 },
+					]),
 				}),
 			} as any,
 			AI: {} as any,
@@ -118,17 +117,17 @@ describe("executeReflectionTool", () => {
 
 	describe("getBacklinks", () => {
 		function contextWithBacklinks(backlinks: string[], ok = true) {
+			// The production code calls `getMemoryIndex(env).backlinks(target)` —
+			// the DO stub's RPC surface. Mock exposes that RPC method directly so
+			// we don't have to mirror the HTTP shim layer in tests.
+			const stub = ok
+				? { backlinks: vi.fn().mockResolvedValue({ backlinks }) }
+				: { backlinks: vi.fn().mockRejectedValue(new Error("Backlinks lookup failed")) };
 			return createExecutionContext(mockStorage, {
 				MEMORY_BUCKET: {} as any,
 				MEMORY_INDEX: {
 					idFromName: vi.fn().mockReturnValue("test-id"),
-					get: vi.fn().mockReturnValue({
-						fetch: vi.fn().mockResolvedValue({
-							ok,
-							json: () => Promise.resolve({ backlinks }),
-							text: () => Promise.resolve("error text"),
-						}),
-					}),
+					get: vi.fn().mockReturnValue(stub),
 				} as any,
 				AI: {} as any,
 				MEMORY_AUTH_TOKEN: "test-token",
