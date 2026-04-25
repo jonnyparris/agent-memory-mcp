@@ -90,6 +90,7 @@ describe("MCP Tools", () => {
 			const toolNames = data.result.tools.map((t) => t.name);
 			expect(toolNames).toContain("read");
 			expect(toolNames).toContain("write");
+			expect(toolNames).toContain("write_many");
 			expect(toolNames).toContain("list");
 			expect(toolNames).toContain("search");
 			expect(toolNames).toContain("history");
@@ -172,6 +173,91 @@ describe("MCP Tools", () => {
 			const content = parseToolJson(result.result.content[0].text);
 			expect(content.success).toBe(true);
 			expect(content.overlaps).toBeUndefined();
+		});
+	});
+
+	describe("write_many tool", () => {
+		it("should write multiple files in one call", async () => {
+			// The whole point of write_many: one MCP round-trip, N R2
+			// writes in parallel. Per-file results carry their own
+			// version_id and byte count so the caller can audit the batch.
+			const result = await callTool("write_many", {
+				files: [
+					{ path: "test-tools/many/a.md", content: "# A" },
+					{ path: "test-tools/many/b.md", content: "# B" },
+					{ path: "test-tools/many/c.md", content: "# C" },
+				],
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.success).toBe(true);
+			expect(content.written).toBe(3);
+			expect(content.failed).toBe(0);
+			expect(content.results).toHaveLength(3);
+			for (const r of content.results) {
+				expect(r.success).toBe(true);
+				expect(r.bytes).toBeGreaterThan(0);
+			}
+		});
+
+		it("should default to detect_overlaps: false for bulk writes", async () => {
+			// Bulk default: no overlap detection. Saves N similarity
+			// searches plus their R2 reads of candidate files. Callers who
+			// want overlap warnings on bulk writes opt in per-file.
+			const result = await callTool("write_many", {
+				files: [
+					{ path: "memory/test-tools/many-no-overlaps-a.md", content: "# Bulk A" },
+					{ path: "memory/test-tools/many-no-overlaps-b.md", content: "# Bulk B" },
+				],
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.success).toBe(true);
+			for (const r of content.results) {
+				expect(r.overlaps).toBeUndefined();
+			}
+		});
+
+		it("should respect per-file wait_for_index override", async () => {
+			// Mixing per-file overrides in a single batch is supported —
+			// each entry threads through indexWrite independently, so one
+			// file can defer while another waits.
+			const result = await callTool("write_many", {
+				files: [
+					{
+						path: "test-tools/many-mixed/deferred.md",
+						content: "# Deferred",
+						wait_for_index: false,
+					},
+					{
+						path: "test-tools/many-mixed/synced.md",
+						content: "# Synced",
+						wait_for_index: true,
+					},
+				],
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.success).toBe(true);
+			const byPath = Object.fromEntries(content.results.map((r: any) => [r.path, r]));
+			expect(byPath["test-tools/many-mixed/deferred.md"].index_deferred).toBe(true);
+			expect(byPath["test-tools/many-mixed/synced.md"].index_deferred).toBeUndefined();
+		});
+
+		it("should reject empty file lists", async () => {
+			// Zod schema requires at least one file. A zero-length batch
+			// is a programming error, not something to silently succeed.
+			const result = await callTool("write_many", { files: [] });
+			expect(result.result.isError).toBe(true);
+		});
+
+		it("should reject batches over the 50-file limit", async () => {
+			const tooMany = Array.from({ length: 51 }, (_, i) => ({
+				path: `test-tools/many-too-big/${i}.md`,
+				content: `# ${i}`,
+			}));
+			const result = await callTool("write_many", { files: tooMany });
+			expect(result.result.isError).toBe(true);
 		});
 	});
 

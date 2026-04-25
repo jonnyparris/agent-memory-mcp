@@ -176,6 +176,114 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 
 	registerTool(
 		server,
+		"write_many",
+		{
+			description:
+				"Write multiple files in a single MCP round-trip. Each entry is processed independently — R2 writes run in parallel, embedding updates are issued concurrently to the search index DO, and partial failures are reported per-file rather than failing the whole batch.\n\nDefaults are tuned for bulk edits: detect_overlaps is OFF by default (the caller usually already knows what they're writing), and wait_for_index is ON by default (so the next read/search sees the updated index). Override per-file in the request when you need the cheaper or slower behaviour.\n\nMax 50 files per call. Use this whenever you'd otherwise loop over write — saves N-1 MCP round-trips and lets the embedding model run all updates in parallel.",
+			inputSchema: {
+				files: z
+					.array(
+						z.object({
+							path: z.string().describe("File path, e.g., 'memory/learnings.md'"),
+							content: z.string().describe("Content to write"),
+							detect_overlaps: z
+								.boolean()
+								.optional()
+								.describe("Override the batch default (false). Adds a similarity search per file."),
+							wait_for_index: z
+								.boolean()
+								.optional()
+								.describe(
+									"Override the batch default (true). When false, the index update for this file is deferred via waitUntil.",
+								),
+						}),
+					)
+					.min(1)
+					.max(50)
+					.describe("Up to 50 files to write."),
+			},
+		},
+		async ({
+			files,
+		}: {
+			files: Array<{
+				path: string;
+				content: string;
+				detect_overlaps?: boolean;
+				wait_for_index?: boolean;
+			}>;
+		}) => {
+			// Run every write in parallel. indexWrite() handles its own
+			// error containment (R2 success + embedding_error), so a
+			// failure in one file's embedding update doesn't poison the
+			// whole batch — and a hard throw (e.g. R2 outage on one path)
+			// is caught here and converted into a structured per-file
+			// error instead of taking the entire response down.
+			const results = await Promise.all(
+				files.map(async (file) => {
+					try {
+						const result = await indexWrite(env, storage, file.path, file.content, {
+							// Bulk default: skip overlap detection unless
+							// the caller explicitly asks for it. Most batch
+							// operations are deterministic edits where the
+							// caller already knows the file shape.
+							detectOverlaps: file.detect_overlaps === true,
+							// Bulk default: keep waiting for the index so
+							// the response is "everything is consistent" by
+							// the time it returns. Callers who want the
+							// fast path opt in per-file.
+							waitForIndex: file.wait_for_index !== false,
+							ctx,
+						});
+						return {
+							path: file.path,
+							success: true,
+							version_id: result.version_id,
+							tags: result.tags,
+							links: result.links,
+							bytes: file.content.length,
+							...(result.embedding_error ? { embedding_error: result.embedding_error } : {}),
+							...(result.index_deferred ? { index_deferred: true } : {}),
+							...(result.overlaps && result.overlaps.length > 0
+								? { overlaps: result.overlaps }
+								: {}),
+						};
+					} catch (e) {
+						return {
+							path: file.path,
+							success: false,
+							error: e instanceof Error ? e.message : String(e),
+						};
+					}
+				}),
+			);
+
+			const succeeded = results.filter((r) => r.success).length;
+			const failed = results.length - succeeded;
+			const totalBytes = results.reduce(
+				(sum, r) => sum + ("bytes" in r && typeof r.bytes === "number" ? r.bytes : 0),
+				0,
+			);
+
+			const prefix =
+				failed === 0
+					? `Wrote ${succeeded} file(s), ${totalBytes} bytes total`
+					: `Wrote ${succeeded}/${results.length} file(s) — ${failed} failed`;
+
+			return okResult(
+				{
+					success: failed === 0,
+					written: succeeded,
+					failed,
+					results,
+				},
+				prefix,
+			);
+		},
+	);
+
+	registerTool(
+		server,
 		"list",
 		{
 			description:
