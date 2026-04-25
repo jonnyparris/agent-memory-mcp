@@ -119,6 +119,60 @@ describe("MCP Tools", () => {
 			const content = parseToolJson(result.result.content[0].text);
 			expect(content.success).toBe(true);
 		});
+
+		it("should report index_deferred when wait_for_index is false", async () => {
+			// `wait_for_index: false` opts the caller into eventual
+			// consistency: the R2 write still lands synchronously, but the
+			// embedding update is handed to ctx.waitUntil. The response
+			// surfaces `index_deferred: true` so callers know the search
+			// index won't reflect this write for ~1–3s.
+			const result = await callTool("write", {
+				path: "test-tools/deferred.md",
+				content: "# Deferred",
+				wait_for_index: false,
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.success).toBe(true);
+			expect(content.index_deferred).toBe(true);
+			// Forcing waitForIndex off must also skip overlap detection,
+			// since the freshly-written embedding isn't queryable yet.
+			expect(content.overlaps).toBeUndefined();
+		});
+
+		it("should not defer the index when overlap detection is requested", async () => {
+			// Overlap detection has to read the freshly-updated index, so
+			// the implementation forces inline-await whenever it's on —
+			// even if the caller asked for waitForIndex: false. This
+			// preserves the safety property "asking for overlaps means you
+			// get overlaps." The path must live under memory/ because
+			// overlap detection itself is gated to that prefix.
+			const result = await callTool("write", {
+				path: "memory/test-tools/no-defer.md",
+				content: "# Inline",
+				wait_for_index: false,
+				detect_overlaps: true,
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.success).toBe(true);
+			expect(content.index_deferred).toBeUndefined();
+		});
+
+		it("should skip overlap detection when detect_overlaps is false", async () => {
+			// `detect_overlaps: false` is the cheap path: write to R2,
+			// update the index, return. No similarity search, no R2 reads
+			// of overlap candidates. The write_many tool defaults to this.
+			const result = await callTool("write", {
+				path: "memory/test-tools/no-overlaps.md",
+				content: "# No overlaps",
+				detect_overlaps: false,
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.success).toBe(true);
+			expect(content.overlaps).toBeUndefined();
+		});
 	});
 
 	describe("read tool", () => {

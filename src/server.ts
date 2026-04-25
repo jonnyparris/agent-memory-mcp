@@ -21,7 +21,17 @@ import { createR2Storage } from "./storage/r2";
 import { extractSnippet, truncateWithMeta } from "./truncate";
 import type { Env } from "./types";
 
-export function createServer(env: Env): McpServer {
+/**
+ * Build the MCP server.
+ *
+ * `ctx` is optional so callers like the unit tests can spin up a server
+ * without a full Worker `ExecutionContext`. When present, tools that
+ * support deferred work (e.g. `write` with `wait_for_index: false`) use
+ * `ctx.waitUntil` to keep the embedding update alive past the response.
+ * When absent, those tools fall back to awaiting inline so the work still
+ * runs to completion — at the cost of higher response latency.
+ */
+export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 	const server = new McpServer({
 		name: "agent-memory",
 		version: "0.1.0",
@@ -97,14 +107,48 @@ export function createServer(env: Env): McpServer {
 		"write",
 		{
 			description:
-				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths.",
+				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths by default.\n\nLatency tuning: pass `wait_for_index: false` to defer the embedding update via `waitUntil` — the R2 write still completes synchronously, but the search index becomes consistent ~1–3s later. Pass `detect_overlaps: false` to skip the post-write similarity search (saves another DO round-trip plus R2 reads). Both default to the safe/correct values; flip them when you already know what you're doing (overwriting a known file, bulk edits).",
 			inputSchema: {
 				path: z.string().describe("File path, e.g., 'memory/learnings.md'"),
 				content: z.string().describe("Content to write"),
+				detect_overlaps: z
+					.boolean()
+					.optional()
+					.default(true)
+					.describe(
+						"Run a similarity search after the write and surface duplicate memory/ files. Default true.",
+					),
+				wait_for_index: z
+					.boolean()
+					.optional()
+					.default(true)
+					.describe(
+						"When true (default), the call blocks until the search index is updated. When false, the embedding update is deferred via waitUntil and the response returns as soon as R2 acknowledges the write. Forced to true when detect_overlaps is true (overlap detection has to read the fresh index).",
+					),
 			},
 		},
-		async ({ path, content }: { path: string; content: string }) => {
-			const result = await indexWrite(env, storage, path, content, { detectOverlaps: true });
+		async ({
+			path,
+			content,
+			detect_overlaps,
+			wait_for_index,
+		}: {
+			path: string;
+			content: string;
+			detect_overlaps?: boolean;
+			wait_for_index?: boolean;
+		}) => {
+			// Zod defaults the bools to true at the schema layer, but the
+			// destructure may still produce undefined when the SDK strips
+			// defaults — coerce explicitly so the indexWrite contract is
+			// unambiguous.
+			const detectOverlaps = detect_overlaps !== false;
+			const waitForIndex = wait_for_index !== false;
+			const result = await indexWrite(env, storage, path, content, {
+				detectOverlaps,
+				waitForIndex,
+				ctx,
+			});
 			const response: Record<string, unknown> = {
 				success: true,
 				version_id: result.version_id,
@@ -112,6 +156,7 @@ export function createServer(env: Env): McpServer {
 				links: result.links,
 			};
 			if (result.embedding_error) response.embedding_error = result.embedding_error;
+			if (result.index_deferred) response.index_deferred = true;
 			if (result.overlaps && result.overlaps.length > 0) {
 				response.overlaps = result.overlaps;
 				response.overlap_hint =
@@ -121,6 +166,7 @@ export function createServer(env: Env): McpServer {
 
 			const parts = [`Wrote ${path} (${content.length} bytes)`];
 			if (result.tags.length > 0) parts.push(`tags: ${result.tags.join(", ")}`);
+			if (result.index_deferred) parts.push("index update deferred");
 			if (result.overlaps && result.overlaps.length > 0) {
 				parts.push(`${result.overlaps.length} similar file(s) already exist`);
 			}

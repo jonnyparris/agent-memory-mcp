@@ -12,6 +12,39 @@ export interface IndexWriteResult {
 	links: string[];
 	embedding_error?: string;
 	overlaps?: Array<{ path: string; score: number; snippet: string }>;
+	/**
+	 * `true` when the embedding update was deferred via `ctx.waitUntil` and
+	 * has not been awaited. The R2 write has already landed; the search
+	 * index will become consistent within ~1–3s.
+	 */
+	index_deferred?: boolean;
+}
+
+export interface IndexWriteOptions {
+	/**
+	 * Run a similarity search after the embedding update and surface the
+	 * top matches as `overlaps`. Adds an extra DO round-trip plus up to 5
+	 * R2 reads, so leave off for bulk or low-stakes writes.
+	 */
+	detectOverlaps?: boolean;
+	/**
+	 * Cloudflare ExecutionContext. When provided together with
+	 * `waitForIndex: false`, the embedding update runs in
+	 * `ctx.waitUntil` and the function returns as soon as the R2 write
+	 * lands. Without `ctx`, the index update is always awaited inline.
+	 */
+	ctx?: ExecutionContext;
+	/**
+	 * When `false` and `ctx` is provided, defer the embedding update to
+	 * `ctx.waitUntil` and return immediately after the R2 write. Default:
+	 * `true` (legacy behaviour — caller blocks on the index update).
+	 *
+	 * Mutually exclusive with `detectOverlaps: true` — overlap detection
+	 * needs the index update to complete before the similarity search
+	 * runs, so deferring the index would defeat the feature. When both
+	 * are set, overlap detection wins and the write blocks anyway.
+	 */
+	waitForIndex?: boolean;
 }
 
 /**
@@ -19,18 +52,22 @@ export interface IndexWriteResult {
  *
  * Both the `write` MCP tool and `apply_reflection_changes` need the same
  * sequence: persist to R2, parse tags + wikilinks out of the content, push
- * the embedding update to the Durable Object, and surface semantic overlap
- * warnings so callers don't silently create duplicate memory files.
+ * the embedding update to the Durable Object, and (optionally) surface
+ * semantic overlap warnings so callers don't silently create duplicate
+ * memory files.
  *
- * Errors in embedding update don't fail the whole write — the file still
- * lands in R2, and the caller gets `embedding_error` to surface to the user.
+ * Errors in the embedding update don't fail the whole write — the file
+ * still lands in R2, and the caller gets `embedding_error` to surface to
+ * the user. When the index update is deferred via `waitUntil`, embedding
+ * errors are logged but never propagated back to the caller (the response
+ * is already returned).
  */
 export async function indexWrite(
 	env: Env,
 	storage: R2Storage,
 	path: string,
 	content: string,
-	options: { detectOverlaps?: boolean } = {},
+	options: IndexWriteOptions = {},
 ): Promise<IndexWriteResult> {
 	const result = await storage.write(path, content);
 	const tags = parseTags(content);
@@ -43,15 +80,30 @@ export async function indexWrite(
 		links,
 	};
 
+	const wantOverlaps = options.detectOverlaps && path.startsWith("memory/");
+	// `waitForIndex` defaults to true to preserve legacy behaviour. Overlap
+	// detection forces inline-await regardless because it has to read the
+	// freshly-updated index.
+	const shouldDefer = options.ctx && options.waitForIndex === false && !wantOverlaps;
+
+	const index = getMemoryIndex(env);
+
+	if (shouldDefer && options.ctx) {
+		options.ctx.waitUntil(
+			index.update({ path, content, tags, links }).catch((e) => {
+				// Nothing to surface to the caller — the response has already
+				// been returned. Log so the failure is visible in tail logs.
+				console.error(`Deferred index update failed for ${path}:`, e);
+			}),
+		);
+		response.index_deferred = true;
+		return response;
+	}
+
 	try {
-		const index = getMemoryIndex(env);
 		await index.update({ path, content, tags, links });
 
-		// Overlap detection runs a similarity search after the write so callers
-		// see "this overlaps with X" hints. Gated behind an option because it
-		// adds an extra DO round-trip — on by default for interactive writes,
-		// off for bulk reflection edits that already know what they're doing.
-		if (options.detectOverlaps && path.startsWith("memory/")) {
+		if (wantOverlaps) {
 			const OVERLAP_THRESHOLD = 0.72;
 			const candidates = await index.search({
 				query: content.slice(0, 8000),

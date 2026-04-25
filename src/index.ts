@@ -65,7 +65,7 @@ export default {
 				return unauthorizedResponse(authResult.error!);
 			}
 
-			const server = createServer(env);
+			const server = createServer(env, ctx);
 			const transport = new WebStandardStreamableHTTPServerTransport({
 				sessionIdGenerator: undefined,
 				enableJsonResponse: true,
