@@ -16,7 +16,7 @@ import {
 import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { getMemoryIndex } from "./search/client";
-import { indexWrite } from "./search/index-write";
+import { EmptyContentError, indexWrite } from "./search/index-write";
 import { createR2Storage } from "./storage/r2";
 import { extractSnippet, truncateWithMeta } from "./truncate";
 import type { Env } from "./types";
@@ -107,7 +107,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"write",
 		{
 			description:
-				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths by default.\n\nLatency tuning: pass `wait_for_index: false` to defer the embedding update via `waitUntil` — the R2 write still completes synchronously, but the search index becomes consistent ~1–3s later. Pass `detect_overlaps: false` to skip the post-write similarity search (saves another DO round-trip plus R2 reads). Both default to the safe/correct values; flip them when you already know what you're doing (overwriting a known file, bulk edits).",
+				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths by default.\n\nLatency tuning: pass `wait_for_index: false` to defer the embedding update via `waitUntil` — the R2 write still completes synchronously, but the search index becomes consistent ~1–3s later. Pass `detect_overlaps: false` to skip the post-write similarity search (saves another DO round-trip plus R2 reads). Both default to the safe/correct values; flip them when you already know what you're doing (overwriting a known file, bulk edits).\n\nEmpty content is refused by default — pass `allow_empty: true` to truncate a file deliberately.",
 			inputSchema: {
 				path: z.string().describe("File path, e.g., 'memory/learnings.md'"),
 				content: z.string().describe("Content to write"),
@@ -125,6 +125,13 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					.describe(
 						"When true (default), the call blocks until the search index is updated. When false, the embedding update is deferred via waitUntil and the response returns as soon as R2 acknowledges the write. Forced to true when detect_overlaps is true (overlap detection has to read the fresh index).",
 					),
+				allow_empty: z
+					.boolean()
+					.optional()
+					.default(false)
+					.describe(
+						"Permit writing zero-byte content. Default false — empty writes are almost always a caller bug and they destructively overwrite the existing file. Set true only when you genuinely want to truncate.",
+					),
 			},
 		},
 		async ({
@@ -132,23 +139,37 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			content,
 			detect_overlaps,
 			wait_for_index,
+			allow_empty,
 		}: {
 			path: string;
 			content: string;
 			detect_overlaps?: boolean;
 			wait_for_index?: boolean;
+			allow_empty?: boolean;
 		}) => {
-			// Zod defaults the bools to true at the schema layer, but the
+			// Zod defaults the bools at the schema layer, but the
 			// destructure may still produce undefined when the SDK strips
 			// defaults — coerce explicitly so the indexWrite contract is
 			// unambiguous.
 			const detectOverlaps = detect_overlaps !== false;
 			const waitForIndex = wait_for_index !== false;
-			const result = await indexWrite(env, storage, path, content, {
-				detectOverlaps,
-				waitForIndex,
-				ctx,
-			});
+			const allowEmpty = allow_empty === true;
+			let result: Awaited<ReturnType<typeof indexWrite>>;
+			try {
+				result = await indexWrite(env, storage, path, content, {
+					detectOverlaps,
+					waitForIndex,
+					allowEmpty,
+					ctx,
+				});
+			} catch (e) {
+				if (e instanceof EmptyContentError) {
+					// Surface as a structured tool error so callers see the
+					// remediation hint rather than a generic exception.
+					return errResult(e.message, { path, allow_empty: false });
+				}
+				throw e;
+			}
 			const response: Record<string, unknown> = {
 				success: true,
 				version_id: result.version_id,
@@ -179,7 +200,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"write_many",
 		{
 			description:
-				"Write multiple files in a single MCP round-trip. Each entry is processed independently — R2 writes run in parallel, embedding updates are issued concurrently to the search index DO, and partial failures are reported per-file rather than failing the whole batch.\n\nDefaults are tuned for bulk edits: detect_overlaps is OFF by default (the caller usually already knows what they're writing), and wait_for_index is ON by default (so the next read/search sees the updated index). Override per-file in the request when you need the cheaper or slower behaviour.\n\nMax 50 files per call. Use this whenever you'd otherwise loop over write — saves N-1 MCP round-trips and lets the embedding model run all updates in parallel.",
+				"Write multiple files in a single MCP round-trip. Each entry is processed independently — R2 writes run in parallel, embedding updates are issued concurrently to the search index DO, and partial failures are reported per-file rather than failing the whole batch.\n\nDefaults are tuned for bulk edits: detect_overlaps is OFF by default (the caller usually already knows what they're writing), and wait_for_index is ON by default (so the next read/search sees the updated index). Override per-file in the request when you need the cheaper or slower behaviour.\n\nMax 50 files per call. Use this whenever you'd otherwise loop over write — saves N-1 MCP round-trips and lets the embedding model run all updates in parallel.\n\nEmpty content is refused per-file by default — set `allow_empty: true` on a specific file entry to truncate it deliberately.",
 			inputSchema: {
 				files: z
 					.array(
@@ -196,6 +217,12 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 								.describe(
 									"Override the batch default (true). When false, the index update for this file is deferred via waitUntil.",
 								),
+							allow_empty: z
+								.boolean()
+								.optional()
+								.describe(
+									"Permit zero-byte content for this file. Default false — empty entries are reported as per-file failures rather than silently overwriting the existing file.",
+								),
 						}),
 					)
 					.min(1)
@@ -211,14 +238,16 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				content: string;
 				detect_overlaps?: boolean;
 				wait_for_index?: boolean;
+				allow_empty?: boolean;
 			}>;
 		}) => {
 			// Run every write in parallel. indexWrite() handles its own
 			// error containment (R2 success + embedding_error), so a
 			// failure in one file's embedding update doesn't poison the
-			// whole batch — and a hard throw (e.g. R2 outage on one path)
-			// is caught here and converted into a structured per-file
-			// error instead of taking the entire response down.
+			// whole batch — and a hard throw (e.g. R2 outage on one path,
+			// or empty content without allow_empty) is caught here and
+			// converted into a structured per-file error instead of
+			// taking the entire response down.
 			const results = await Promise.all(
 				files.map(async (file) => {
 					try {
@@ -233,6 +262,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 							// the time it returns. Callers who want the
 							// fast path opt in per-file.
 							waitForIndex: file.wait_for_index !== false,
+							allowEmpty: file.allow_empty === true,
 							ctx,
 						});
 						return {
