@@ -45,6 +45,32 @@ export interface IndexWriteOptions {
 	 * are set, overlap detection wins and the write blocks anyway.
 	 */
 	waitForIndex?: boolean;
+	/**
+	 * Opt in to writing empty content. Refused by default: an
+	 * empty-string write silently destroys whatever was at `path` with
+	 * no in-bucket recovery when versioning is off, and the embedding
+	 * pipeline produces no tags/links/overlap warnings to flag the
+	 * mistake. Callers who genuinely want to truncate a file must set
+	 * this to `true`.
+	 *
+	 * See https://github.com/jonnyparris/agent-memory-mcp/issues/8.
+	 */
+	allowEmpty?: boolean;
+}
+
+/**
+ * Thrown by `indexWrite` when the caller passes empty content without
+ * setting `allowEmpty: true`. Surfaced as a structured MCP error at the
+ * tool boundary so the caller sees a clear remediation hint instead of
+ * silently truncating a file.
+ */
+export class EmptyContentError extends Error {
+	constructor(path: string) {
+		super(
+			`Refusing to write empty content to ${path}. Pass allow_empty: true to override (this overwrites the existing file with zero bytes).`,
+		);
+		this.name = "EmptyContentError";
+	}
 }
 
 /**
@@ -69,6 +95,16 @@ export async function indexWrite(
 	content: string,
 	options: IndexWriteOptions = {},
 ): Promise<IndexWriteResult> {
+	// Refuse empty writes by default. Empty-string overwrites are
+	// almost always a caller bug (a templating step that produced no
+	// content, a partial response, a swallowed exception) and they are
+	// destructive: when R2 versioning is off the previous content is
+	// unrecoverable from the bucket. Callers who genuinely want to
+	// truncate a file opt in with `allowEmpty`.
+	if (content.length === 0 && !options.allowEmpty) {
+		throw new EmptyContentError(path);
+	}
+
 	const result = await storage.write(path, content);
 	const tags = parseTags(content);
 	const links = parseWikilinks(content);

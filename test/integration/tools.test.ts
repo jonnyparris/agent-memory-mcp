@@ -111,10 +111,30 @@ describe("MCP Tools", () => {
 			expect(content.success).toBe(true);
 		});
 
-		it("should handle empty content", async () => {
+		it("should refuse empty content by default", async () => {
+			// Empty-string overwrites are almost always a caller bug and
+			// they destructively truncate the existing file. The tool
+			// must reject them at the boundary so the caller sees a
+			// clear remediation hint.
+			// See https://github.com/jonnyparris/agent-memory-mcp/issues/8.
 			const result = await callTool("write", {
 				path: "test-tools/empty.md",
 				content: "",
+			});
+
+			expect(result.result.isError).toBe(true);
+			const errorText = result.result.content[0].text as string;
+			expect(errorText).toMatch(/empty content/i);
+			expect(errorText).toMatch(/allow_empty/);
+		});
+
+		it("should allow empty content when allow_empty is true", async () => {
+			// The escape hatch for callers who genuinely want to
+			// truncate a file (e.g. clearing a scratch buffer).
+			const result = await callTool("write", {
+				path: "test-tools/empty-allowed.md",
+				content: "",
+				allow_empty: true,
 			});
 
 			const content = parseToolJson(result.result.content[0].text);
@@ -258,6 +278,50 @@ describe("MCP Tools", () => {
 			}));
 			const result = await callTool("write_many", { files: tooMany });
 			expect(result.result.isError).toBe(true);
+		});
+
+		it("should report empty entries as per-file failures without poisoning the batch", async () => {
+			// Empty content on one entry must not block the rest of the
+			// batch — that's the whole point of per-file containment.
+			// The empty entry should report success: false with an
+			// allow_empty hint; siblings still write.
+			// See https://github.com/jonnyparris/agent-memory-mcp/issues/8.
+			const result = await callTool("write_many", {
+				files: [
+					{ path: "test-tools/many-empty/ok-a.md", content: "# A" },
+					{ path: "test-tools/many-empty/empty.md", content: "" },
+					{ path: "test-tools/many-empty/ok-b.md", content: "# B" },
+				],
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.written).toBe(2);
+			expect(content.failed).toBe(1);
+			const byPath = Object.fromEntries(content.results.map((r: any) => [r.path, r]));
+			expect(byPath["test-tools/many-empty/ok-a.md"].success).toBe(true);
+			expect(byPath["test-tools/many-empty/ok-b.md"].success).toBe(true);
+			expect(byPath["test-tools/many-empty/empty.md"].success).toBe(false);
+			expect(byPath["test-tools/many-empty/empty.md"].error).toMatch(/empty content/i);
+			expect(byPath["test-tools/many-empty/empty.md"].error).toMatch(/allow_empty/);
+		});
+
+		it("should write empty entries when allow_empty is true on that entry", async () => {
+			// Per-file allow_empty lets a batch mix deliberate truncates
+			// with normal writes.
+			const result = await callTool("write_many", {
+				files: [
+					{ path: "test-tools/many-empty-allowed/ok.md", content: "# OK" },
+					{
+						path: "test-tools/many-empty-allowed/truncate.md",
+						content: "",
+						allow_empty: true,
+					},
+				],
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.written).toBe(2);
+			expect(content.failed).toBe(0);
 		});
 	});
 
