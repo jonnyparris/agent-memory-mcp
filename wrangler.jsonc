@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "agent-memory-mcp",
+	"name": "agent-memory-mcp-duvland",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-05-16",
 	"compatibility_flags": ["nodejs_compat"],
@@ -9,7 +9,7 @@
 	"r2_buckets": [
 		{
 			"binding": "MEMORY_BUCKET",
-			"bucket_name": "agent-memory"
+			"bucket_name": "duvland"
 		}
 	],
 
