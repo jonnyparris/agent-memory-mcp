@@ -23,14 +23,7 @@
 		"type": "git",
 		"url": "git+https://github.com/jonnyparris/agent-memory-mcp.git"
 	},
-	"keywords": [
-		"mcp",
-		"ai",
-		"memory",
-		"cloudflare",
-		"workers",
-		"semantic-search"
-	],
+	"keywords": ["mcp", "ai", "memory", "cloudflare", "workers", "semantic-search"],
 	"author": "Jonny Parris",
 	"license": "MIT",
 	"bugs": {
