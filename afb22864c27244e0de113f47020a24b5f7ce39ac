@@ -1,0 +1,23 @@
+package.json
+  23481231f844ff28 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "afb22864c27244e0de113f47020a24b5f7ce39ac",
+  "prompts": {
+    "23481231f844ff28": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1ce9232b5ffer4Rj6GafilD5h7",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "Ruskin Constant",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 8,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
