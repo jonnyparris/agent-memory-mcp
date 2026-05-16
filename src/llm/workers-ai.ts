@@ -21,7 +21,14 @@ import type {
 	LLMToolCall,
 } from "./types";
 
-/** OpenAI-compatible chat completion response */
+/** OpenAI-compatible chat completion response.
+ *
+ * Some reasoning models (Kimi K2.6, Gemma 4, GPT-OSS, Qwen3) place their
+ * deliberation in a separate `reasoning_content` field and only the final
+ * answer in `content`. If the model hits `max_tokens` during reasoning,
+ * `content` comes back null and the whole answer lives in
+ * `reasoning_content` — which the caller has to read explicitly.
+ */
 interface ChatCompletionResponse {
 	id: string;
 	object: string;
@@ -32,6 +39,7 @@ interface ChatCompletionResponse {
 		message: {
 			role: string;
 			content: string | null;
+			reasoning_content?: string | null;
 			tool_calls?: Array<{
 				id: string;
 				type: "function";
@@ -116,6 +124,8 @@ export class WorkersAIProvider implements LLMProvider {
 				model: this.model,
 				hasContent: !!response.choices?.[0]?.message?.content,
 				contentLength: response.choices?.[0]?.message?.content?.length ?? 0,
+				hasReasoningContent: !!response.choices?.[0]?.message?.reasoning_content,
+				reasoningContentLength: response.choices?.[0]?.message?.reasoning_content?.length ?? 0,
 				hasToolCalls: !!response.choices?.[0]?.message?.tool_calls,
 				toolCallCount: response.choices?.[0]?.message?.tool_calls?.length ?? 0,
 				finishReason: response.choices?.[0]?.finish_reason,
@@ -123,7 +133,11 @@ export class WorkersAIProvider implements LLMProvider {
 		);
 
 		const choice = response.choices?.[0];
-		const responseText = choice?.message?.content ?? "";
+		// Reasoning models (Kimi K2.6, Gemma 4, GPT-OSS, etc.) sometimes return
+		// the answer in reasoning_content when max_tokens runs out during
+		// deliberation. Fall back so the caller never sees a silently-empty
+		// response from a model that did produce useful output.
+		const responseText = choice?.message?.content ?? choice?.message?.reasoning_content ?? "";
 
 		// Parse tool calls from OpenAI format
 		const toolCalls = this.parseOpenAIToolCalls(choice?.message?.tool_calls);
@@ -149,11 +163,16 @@ export class WorkersAIProvider implements LLMProvider {
 		tools: OpenAITool[] | undefined,
 		options?: LLMCompletionOptions,
 	): Promise<ChatCompletionResponse> {
-		// Build request body
+		// Build request body. Default max_tokens is generous because reasoning
+		// models (Kimi K2.6, Gemma 4, GPT-OSS, Qwen3) consume hundreds-to-thousands
+		// of tokens on `reasoning_content` before the visible answer begins. At
+		// 2048 they routinely exhaust budget mid-deliberation and return content:
+		// null, which silently breaks any agentic loop that doesn't fall back to
+		// reasoning_content.
 		const body: Record<string, unknown> = {
 			model: this.model,
 			messages,
-			max_tokens: options?.maxTokens ?? 2048,
+			max_tokens: options?.maxTokens ?? 8192,
 			temperature: options?.temperature ?? 0.7,
 		};
 
