@@ -23,7 +23,14 @@
 		"type": "git",
 		"url": "git+https://github.com/jonnyparris/agent-memory-mcp.git"
 	},
-	"keywords": ["mcp", "ai", "memory", "cloudflare", "workers", "semantic-search"],
+	"keywords": [
+		"mcp",
+		"ai",
+		"memory",
+		"cloudflare",
+		"workers",
+		"semantic-search"
+	],
 	"author": "Jonny Parris",
 	"license": "MIT",
 	"bugs": {
@@ -33,13 +40,13 @@
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",
 		"@cloudflare/vitest-pool-workers": "^0.12.21",
-		"tsx": "^4.19.0",
+		"tsx": "^4.22.0",
 		"typescript": "^5.7.0",
 		"vitest": "^2.1.0",
-		"wrangler": "^4.61.1"
+		"wrangler": "^4.92.0"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.5.0",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"zod": "^3.24.0"
 	}
 }
