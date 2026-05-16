@@ -228,6 +228,19 @@ curl -X POST "https://your-worker.workers.dev/reflect" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
+### What the scheduled reflection is *not*
+
+The cron-driven reflection is a lightweight, autonomous scan. It runs unattended on a budget of a few iterations and writes proposals to `memory/reflections/pending/{date}.md` (empty proposals get archived to `memory/reflections/archive/{date}.md` to make zero-output runs visible).
+
+This is **not the same as** a deep reflection workflow you might drive from your agent — e.g. a `/nightly-reflect` slash command that pulls your entire week of activity (calendar, git log, scratch notes, chat history) and writes a multi-section improvement plan. The cron has none of that context. It only sees what's already in memory.
+
+Concretely:
+
+- **Cron output** lives in `memory/reflections/pending/` and `memory/reflections/archive/`. Expect terse summaries and small auto-fixes.
+- **Agent-driven deep reflection output** should live somewhere else (e.g. `memory/workload/plans/{date}-improvement-proposals.md`). Don't conflate the two — a healthy `memory/reflections/archive/` does not mean your weekly reflection ran.
+
+If your agent has a separate deep-reflection workflow, watch its output directory directly. The cron is a janitor; the agent is the architect.
+
 ---
 
 ## The `execute` tool
