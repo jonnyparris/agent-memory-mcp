@@ -42,14 +42,16 @@
 	},
 
 	// Reflection model configuration
-	// duvland: cheaper-by-default models for the non-CF fork.
+	// duvland: cheaper-by-default models, validated head-to-head against Kimi K2.6 on
+	// real reflection content (see PR #11 evaluation, 2026-05-16).
 	// - Primary: gemma-4-26b-a4b-it ($0.10/M in, $0.30/M out, 256k ctx, reasoning + tools)
-	//   vs Kimi K2.6 ($0.95/M in, $4.00/M out) — ~9.5x cheaper input, ~13x cheaper output.
-	// - Fast: granite-4.0-h-micro ($0.017/M in, $0.112/M out) — purpose-built for agentic
-	//   workflows. ~3.5x cheaper than GLM-4.7-flash, designed for instruction following.
+	//   Found the same top-tier issues as Kimi K2.6 at ~22x cheaper.
+	// - Fast: glm-4.7-flash ($0.06/M in, $0.40/M out, 131k ctx)
+	//   Granite 4 micro was too shallow (3 issues, missed Sentry Zero / COFS / Perplexity);
+	//   GLM-4.7-flash gave the broadest coverage of any model tested. Worth the +$0.001/call.
 	"vars": {
 		"REFLECTION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
-		"REFLECTION_MODEL_FAST": "@cf/ibm-granite/granite-4.0-h-micro",
+		"REFLECTION_MODEL_FAST": "@cf/zai-org/glm-4.7-flash",
 		"USE_AGENTIC_REFLECTION": "true"
 	}
 }
