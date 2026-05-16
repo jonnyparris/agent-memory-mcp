@@ -351,4 +351,82 @@ describe("LLM provider", () => {
 			}),
 		);
 	});
+
+	it("WorkersAIProvider falls back to reasoning_content when content is null", async () => {
+		const { WorkersAIProvider } = await import("../../src/llm/workers-ai");
+
+		// Reasoning models (Kimi K2.6, Gemma 4, GPT-OSS, Qwen3) sometimes
+		// return content: null with the actual answer in reasoning_content,
+		// typically when max_tokens runs out mid-deliberation. The provider
+		// must surface reasoning_content so the caller sees the response.
+		const mockAI = {
+			run: vi.fn().mockResolvedValue({
+				id: "test",
+				object: "chat.completion",
+				created: 1,
+				model: "@cf/moonshotai/kimi-k2.6",
+				choices: [
+					{
+						index: 0,
+						message: {
+							role: "assistant",
+							content: null,
+							reasoning_content: "The answer lives here.",
+						},
+						finish_reason: "length",
+					},
+				],
+			}),
+		};
+
+		const provider = new WorkersAIProvider(mockAI as any, "@cf/moonshotai/kimi-k2.6");
+		const result = await provider.complete("Q");
+
+		expect(result.response).toBe("The answer lives here.");
+	});
+
+	it("WorkersAIProvider prefers content over reasoning_content when both present", async () => {
+		const { WorkersAIProvider } = await import("../../src/llm/workers-ai");
+
+		const mockAI = {
+			run: vi.fn().mockResolvedValue({
+				id: "test",
+				object: "chat.completion",
+				created: 1,
+				model: "@cf/moonshotai/kimi-k2.6",
+				choices: [
+					{
+						index: 0,
+						message: {
+							role: "assistant",
+							content: "Final answer.",
+							reasoning_content: "Internal deliberation.",
+						},
+						finish_reason: "stop",
+					},
+				],
+			}),
+		};
+
+		const provider = new WorkersAIProvider(mockAI as any, "@cf/moonshotai/kimi-k2.6");
+		const result = await provider.complete("Q");
+
+		expect(result.response).toBe("Final answer.");
+	});
+
+	it("WorkersAIProvider default max_tokens is generous enough for reasoning models", async () => {
+		const { WorkersAIProvider } = await import("../../src/llm/workers-ai");
+
+		const mockAI = {
+			run: vi.fn().mockResolvedValue({ response: "ok" }),
+		};
+
+		const provider = new WorkersAIProvider(mockAI as any);
+		await provider.complete("Q");
+
+		// Reasoning models can burn 1-2k tokens on reasoning_content before
+		// the visible answer starts. Default must allow room for both.
+		const call = mockAI.run.mock.calls[0];
+		expect(call[1].max_tokens).toBeGreaterThanOrEqual(4096);
+	});
 });
