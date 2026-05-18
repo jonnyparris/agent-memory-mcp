@@ -286,6 +286,40 @@ describe("notification card building", () => {
 		const { buildReflectionCard } = await import("../../src/notification");
 		expect(typeof buildReflectionCard).toBe("function");
 	});
+
+	it("should surface flagged issues in the card so users actually see findings", async () => {
+		const { buildReflectionCard } = await import("../../src/notification");
+		const card = buildReflectionCard("2026-05-18", "Flagged 2 issues for review.", {
+			flaggedIssues: [
+				{ path: "memory/foo.md", issue: "Contradicts memory/bar.md" },
+				{ path: "memory/baz.md", issue: "Truncated — 1200 bytes missing" },
+			],
+		});
+
+		const flaggedSection = card.sections.find((s) => s.header?.startsWith("Flagged for Review"));
+		expect(flaggedSection).toBeDefined();
+		expect(flaggedSection?.header).toBe("Flagged for Review (2)");
+		const text = flaggedSection?.widgets[0]?.textParagraph?.text ?? "";
+		expect(text).toContain("memory/foo.md");
+		expect(text).toContain("Contradicts memory/bar.md");
+		expect(text).toContain("memory/baz.md");
+
+		// And the "nothing happened" placeholder must NOT appear when issues are flagged
+		const placeholderSection = card.sections.find((s) =>
+			s.widgets.some((w) => w.textParagraph?.text === "No changes made — memory looks good."),
+		);
+		expect(placeholderSection).toBeUndefined();
+	});
+
+	it("should show the 'memory looks good' placeholder only when truly nothing happened", async () => {
+		const { buildReflectionCard } = await import("../../src/notification");
+		const card = buildReflectionCard("2026-05-18", "Memory looks good — no issues found.");
+
+		const placeholderSection = card.sections.find((s) =>
+			s.widgets.some((w) => w.textParagraph?.text === "No changes made — memory looks good."),
+		);
+		expect(placeholderSection).toBeDefined();
+	});
 });
 
 describe("LLM provider", () => {
