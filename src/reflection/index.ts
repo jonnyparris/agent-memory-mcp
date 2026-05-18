@@ -11,7 +11,12 @@
  */
 
 import { WorkersAIProvider } from "../llm/workers-ai";
-import { type ReflectionChange, buildReflectionCard, sendChatNotification } from "../notification";
+import {
+	type FlaggedIssueSummary,
+	type ReflectionChange,
+	buildReflectionCard,
+	sendChatNotification,
+} from "../notification";
 import type { R2Storage } from "../storage/r2";
 import { createR2Storage } from "../storage/r2";
 import type { Env, MemoryFileMetadata } from "../types";
@@ -56,6 +61,9 @@ export interface ReflectionResult {
 	edits?: ReflectionChange[];
 	/** List of edits that failed to apply */
 	failedEdits?: string[];
+	/** Issues the model flagged but didn't propose an edit for. Surfaced in
+	 * the gchat card so the human can act on them. */
+	flaggedIssues?: FlaggedIssueSummary[];
 }
 
 /**
@@ -99,6 +107,7 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 					quickFixes: result.quickFixes,
 					edits: result.edits,
 					failedEdits: result.failedEdits,
+					flaggedIssues: result.flaggedIssues,
 				},
 			);
 			await sendChatNotification(env.CHAT_WEBHOOK_AUTH_KEY, result.summary ?? "", {
@@ -152,6 +161,7 @@ async function runAgenticReflectionFlow(
 
 	const hasChanges =
 		agenticResult.proposedEdits.length > 0 || agenticResult.autoAppliedFixes.length > 0;
+	const hasFlagged = agenticResult.flaggedIssues.length > 0;
 
 	// Auto-apply all proposed edits directly (no staging for review)
 	const appliedEdits: ReflectionChange[] = [];
@@ -236,8 +246,15 @@ async function runAgenticReflectionFlow(
 
 	// Build a detailed summary
 	let summary: string;
-	if (!hasChanges) {
+	if (!hasChanges && !hasFlagged) {
 		summary = "Memory looks good — no issues found.";
+	} else if (!hasChanges && hasFlagged) {
+		// Findings exist but the model didn't propose any structural edits.
+		// Surface the count so the human knows to look at the card.
+		summary = `Flagged ${agenticResult.flaggedIssues.length} issue${agenticResult.flaggedIssues.length === 1 ? "" : "s"} for review (no auto-edits applied).`;
+		if (agenticResult.summary) {
+			summary += `\n\n${agenticResult.summary}`;
+		}
 	} else {
 		const parts: string[] = [];
 		if (quickFixes.length > 0) {
@@ -250,6 +267,9 @@ async function runAgenticReflectionFlow(
 			parts.push(`${failedEdits.length} failed`);
 		}
 		summary = `Auto-applied ${parts.join(", ")}.`;
+		if (hasFlagged) {
+			summary += ` Plus ${agenticResult.flaggedIssues.length} flagged for review.`;
+		}
 		if (agenticResult.summary) {
 			summary += `\n\n${agenticResult.summary}`;
 		}
@@ -265,6 +285,7 @@ async function runAgenticReflectionFlow(
 		quickFixes,
 		edits: appliedEdits,
 		failedEdits: failedEdits.length > 0 ? failedEdits : undefined,
+		flaggedIssues: agenticResult.flaggedIssues.map((f) => ({ path: f.path, issue: f.issue })),
 		error: agenticResult.error,
 	};
 }

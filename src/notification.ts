@@ -39,6 +39,14 @@ export interface ReflectionChange {
 	reason: string;
 }
 
+/** An issue the reflection agent flagged for the human to look at, but
+ * didn't propose a structured edit for. Surfaced in the gchat card so
+ * the user actually sees findings instead of a daily "no issues" card. */
+export interface FlaggedIssueSummary {
+	path: string;
+	issue: string;
+}
+
 export interface NotificationOptions {
 	/** Google Chat space ID (required - set via CHAT_WEBHOOK_SPACE_ID env var) */
 	spaceId: string;
@@ -119,6 +127,7 @@ export function buildReflectionCard(
 		quickFixes?: ReflectionChange[];
 		edits?: ReflectionChange[];
 		failedEdits?: string[];
+		flaggedIssues?: FlaggedIssueSummary[];
 	},
 ): ChatCard {
 	const sections: ChatCard["sections"] = [
@@ -131,6 +140,7 @@ export function buildReflectionCard(
 	const quickFixes = options?.quickFixes ?? [];
 	const edits = options?.edits ?? [];
 	const failedEdits = options?.failedEdits ?? [];
+	const flaggedIssues = options?.flaggedIssues ?? [];
 
 	// Quick fixes section (Phase A auto-applied)
 	if (quickFixes.length > 0) {
@@ -166,6 +176,23 @@ export function buildReflectionCard(
 		});
 	}
 
+	// Flagged issues section (model found something but didn't propose an edit)
+	if (flaggedIssues.length > 0) {
+		const flaggedLines = flaggedIssues.map((f) => `- <b>${f.path}</b>: ${f.issue}`);
+		sections.push({
+			header: `Flagged for Review (${flaggedIssues.length})`,
+			collapsible: flaggedIssues.length > 3,
+			uncollapsibleWidgetsCount: 1,
+			widgets: [
+				{
+					textParagraph: {
+						text: flaggedLines.join("\n"),
+					},
+				},
+			],
+		});
+	}
+
 	// Failed edits section
 	if (failedEdits.length > 0) {
 		sections.push({
@@ -180,8 +207,8 @@ export function buildReflectionCard(
 		});
 	}
 
-	// If nothing happened, say so
-	if (quickFixes.length === 0 && edits.length === 0) {
+	// If nothing happened at all, say so
+	if (quickFixes.length === 0 && edits.length === 0 && flaggedIssues.length === 0) {
 		sections.push({
 			widgets: [
 				{
