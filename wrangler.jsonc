@@ -42,8 +42,23 @@
 	},
 
 	// Reflection model configuration
+	//
+	// Validated head-to-head against Kimi K2.6 on real reflection content
+	// (2026-05-16). Kimi K2.6 has a known failure mode where it emits tool
+	// calls as text inside `reasoning_content` (e.g. `<|tool_call_begin|>
+	// functions.proposeEdit...`) instead of as native `tool_calls`. Those
+	// proposals never reach the parser, so `proposedEdits` stays empty even
+	// when the model has clearly identified issues. Symptom in the wild:
+	// reflection summaries leaking `<|tool_call_begin|>` markers, or zero
+	// proposals across 10 deep iterations on memory with stale content.
+	//
+	// - Primary: gemma-4-26b-a4b-it ($0.10/M in, $0.30/M out, 256k ctx,
+	//   reasoning + tools). Found the same top-tier issues as Kimi K2.6
+	//   at ~22x cheaper, and emits proper structured tool calls.
+	// - Fast: glm-4.7-flash ($0.06/M in, $0.40/M out, 131k ctx). Broadest
+	//   coverage of any fast model tested; Granite 4 micro was too shallow.
 	"vars": {
-		"REFLECTION_MODEL": "@cf/moonshotai/kimi-k2.6",
+		"REFLECTION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
 		"REFLECTION_MODEL_FAST": "@cf/zai-org/glm-4.7-flash",
 		"USE_AGENTIC_REFLECTION": "true"
 	}
