@@ -149,7 +149,7 @@ The server exposes 23 MCP tools. Your AI assistant discovers and uses them autom
 | `read` | Read one file or up to 50 files from memory (pass a string or array of paths) |
 | `write` | Save a file (auto-indexes for search; extracts `tags:` frontmatter for filtering). Pass `wait_for_index: false` to defer the embedding update for sub-second response, or `detect_overlaps: false` to skip the post-write similarity search |
 | `write_many` | Write up to 50 files in one call. R2 writes run in parallel and embedding updates are issued concurrently; defaults to `detect_overlaps: false` since bulk callers usually know what they're writing |
-| `list` | List files in a directory (optionally filter by tags) |
+| `list` | List files in a directory (optionally filter by tags). Each entry carries `size`, `updated_at`, and the R2 `etag` (md5 for simple puts) — a sync client can diff the etag against a local hash to skip re-downloading unchanged files |
 | `list_tags` | List all tags with the file count for each |
 | `search` | Find memories by meaning (semantic search; optionally filter by tags) |
 | `history` | See previous versions of a file |

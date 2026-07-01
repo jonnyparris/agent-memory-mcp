@@ -1,6 +1,6 @@
 {
 	"name": "agent-memory-mcp",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Self-hostable MCP server for AI agent memory with semantic search",
 	"type": "module",
 	"scripts": {
@@ -17,7 +17,9 @@
 		"typecheck": "tsc --noEmit",
 		"cf-typegen": "wrangler types",
 		"migrate": "npx tsx scripts/migrate.ts",
-		"export": "npx tsx scripts/export.ts"
+		"export": "npx tsx scripts/export.ts",
+		"release": "commit-and-tag-version",
+		"release:dry": "commit-and-tag-version --dry-run"
 	},
 	"repository": {
 		"type": "git",
@@ -33,6 +35,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",
 		"@cloudflare/vitest-pool-workers": "^0.12.21",
+		"commit-and-tag-version": "12.7.3",
 		"tsx": "^4.22.0",
 		"typescript": "^5.7.0",
 		"vitest": "^2.1.0",
