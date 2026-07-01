@@ -54,6 +54,9 @@ export function createR2Storage(bucket: R2Bucket): R2Storage {
 					path: object.key,
 					size: object.size,
 					updated_at: object.uploaded.toISOString(),
+					// md5 hex (no quotes) for simple puts — clients diff this
+					// against a local content hash to skip no-op downloads.
+					etag: object.etag,
 				});
 			}
 

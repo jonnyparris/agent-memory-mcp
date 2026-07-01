@@ -39,6 +39,11 @@ export interface MemoryFileMetadata {
 	path: string;
 	size: number;
 	updated_at: string;
+	// R2 object etag (md5 hex for simple puts, without quotes). Lets a
+	// client skip downloading a file whose stored content already matches
+	// what it has locally — compare against `md5 -q <file>`. Omitted for
+	// synthetic directory entries (delimited prefixes).
+	etag?: string;
 }
 
 export interface SearchResult {

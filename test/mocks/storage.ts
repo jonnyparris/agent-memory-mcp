@@ -12,6 +12,20 @@ interface StoredFile {
 }
 
 /**
+ * Deterministic content-derived stand-in for R2's md5 etag. Not a real
+ * md5 — the mock has no crypto dependency and no test asserts the exact
+ * value; it only needs to be stable per content so etag-diffing logic
+ * behaves. Real R2 returns md5 hex here.
+ */
+function fakeEtag(content: string): string {
+	let h = 0;
+	for (let i = 0; i < content.length; i++) {
+		h = (Math.imul(31, h) + content.charCodeAt(i)) | 0;
+	}
+	return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
  * Create a mock R2Storage backed by a Map
  */
 export function createMockStorage(): R2Storage & {
@@ -56,6 +70,7 @@ export function createMockStorage(): R2Storage & {
 						path,
 						size: file.content.length,
 						updated_at: file.updated_at,
+						etag: fakeEtag(file.content),
 					});
 				} else {
 					// Non-recursive: only show direct children
@@ -68,6 +83,7 @@ export function createMockStorage(): R2Storage & {
 							path,
 							size: file.content.length,
 							updated_at: file.updated_at,
+							etag: fakeEtag(file.content),
 						});
 					} else {
 						// Directory
