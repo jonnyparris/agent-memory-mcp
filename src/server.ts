@@ -345,7 +345,13 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			recursive?: boolean;
 			tags?: string[];
 		}) => {
-			const files = await storage.list(path, recursive);
+			const filtering = Boolean(tags && tags.length > 0);
+			// A tag filter is inherently global — the DO knows nothing about
+			// directory depth — so a shallow listing had nothing to intersect
+			// with and `list({tags:["core"]})` came back empty even though every
+			// tagged file existed one level down. Filtering implies the caller
+			// wants the whole subtree considered.
+			const files = await storage.list(path, filtering ? true : recursive);
 			if (!tags || tags.length === 0) {
 				return { files };
 			}

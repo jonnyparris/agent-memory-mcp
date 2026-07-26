@@ -101,6 +101,73 @@ describe("index prune", () => {
 		);
 	});
 
+	// Tag filters used to post-filter approximate results, so a well-matching
+	// tagged file could be absent purely because it sat outside the global
+	// top-N. These cases pin the exact-scan behaviour that replaced it.
+	it("returns every tagged match regardless of global ranking", async () => {
+		await runInDurableObject(
+			indexStub(),
+			async (instance: MemoryIndex, state: DurableObjectState) => {
+				await instance.stats();
+
+				// One tagged file, buried among many untagged ones whose vectors sit
+				// closer to the query. Post-filtering would lose it.
+				const target = "memory/tagged-needle.md";
+				const queryVector = new Array(EMBEDDING_DIMENSIONS).fill(0);
+				queryVector[0] = 1;
+
+				// The pool leaves the AI binding unwired (see vitest.config.ts), so
+				// searching needs a stub to turn the query into a vector. Swapping it
+				// on the live instance keeps the mock at the test level, as that
+				// config comment recommends, and makes the query vector explicit
+				// rather than whatever a real model would produce.
+				(instance as unknown as { env: { AI: unknown } }).env = {
+					AI: { run: async () => ({ data: [queryVector] }) },
+				};
+
+				const targetVector = new Array(EMBEDDING_DIMENSIONS).fill(0);
+				targetVector[0] = 0.6;
+				targetVector[1] = 0.8;
+
+				state.storage.sql.exec(
+					"INSERT OR REPLACE INTO memories (path, embedding, updated_at) VALUES (?, ?, ?)",
+					target,
+					new TextEncoder().encode(JSON.stringify(targetVector)),
+					Date.now(),
+				);
+				state.storage.sql.exec(
+					"INSERT OR IGNORE INTO file_tags (path, tag) VALUES (?, ?)",
+					target,
+					"core",
+				);
+
+				for (let i = 0; i < 60; i++) {
+					const decoy = new Array(EMBEDDING_DIMENSIONS).fill(0);
+					decoy[0] = 1;
+					decoy[2] = i / 1000;
+					state.storage.sql.exec(
+						"INSERT OR REPLACE INTO memories (path, embedding, updated_at) VALUES (?, ?, ?)",
+						`memory/decoy-${i}.md`,
+						new TextEncoder().encode(JSON.stringify(decoy)),
+						Date.now(),
+					);
+				}
+
+				const untagged = await instance.search({ query: "needle", limit: 3, timeWeight: false });
+				// Sanity check: the decoys really do dominate an unfiltered search.
+				expect(untagged.map((r) => r.id)).not.toContain(target);
+
+				const tagged = await instance.search({
+					query: "needle",
+					limit: 3,
+					timeWeight: false,
+					tags: ["core"],
+				});
+				expect(tagged.map((r) => r.id)).toEqual([target]);
+			},
+		);
+	});
+
 	it("leaves the index untouched on a dry run", async () => {
 		await runInDurableObject(
 			indexStub(),

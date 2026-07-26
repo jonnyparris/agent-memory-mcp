@@ -3,6 +3,28 @@
  * Optimized for small datasets (~10K items) in a Durable Object context
  */
 
+/**
+ * Cosine similarity between two equal-length vectors, in [-1, 1].
+ *
+ * Exported so exact scans elsewhere score with the same arithmetic the graph
+ * uses internally — otherwise approximate and exact results wouldn't be
+ * directly comparable.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+	let dot = 0;
+	let normA = 0;
+	let normB = 0;
+
+	for (let i = 0; i < a.length; i++) {
+		dot += a[i] * b[i];
+		normA += a[i] * a[i];
+		normB += b[i] * b[i];
+	}
+
+	const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+	return denominator === 0 ? 0 : dot / denominator;
+}
+
 export interface HNSWNode {
 	id: string;
 	vector: number[];
@@ -235,18 +257,7 @@ export class HNSWIndex {
 
 	private distance(a: number[], b: number[]): number {
 		// Cosine distance (1 - cosine similarity)
-		let dot = 0;
-		let normA = 0;
-		let normB = 0;
-
-		for (let i = 0; i < a.length; i++) {
-			dot += a[i] * b[i];
-			normA += a[i] * a[i];
-			normB += b[i] * b[i];
-		}
-
-		const similarity = dot / (Math.sqrt(normA) * Math.sqrt(normB));
-		return 1 - similarity;
+		return 1 - cosineSimilarity(a, b);
 	}
 
 	private greedySearch(

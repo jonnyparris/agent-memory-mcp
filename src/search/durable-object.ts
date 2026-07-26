@@ -1,11 +1,20 @@
 import { DurableObject } from "cloudflare:workers";
 import { EMBEDDING_DIMENSIONS, generateEmbedding } from "./embeddings";
-import { HNSWIndex } from "./hnsw";
+import { HNSWIndex, cosineSimilarity } from "./hnsw";
 import { indexSkipReason } from "./indexable";
 
 interface DOEnv {
 	AI: Ai;
 }
+
+/**
+ * Largest tag-filtered candidate set scored by exact scan.
+ *
+ * Beyond this the scan would deserialise most of the index on every query, so
+ * broad tags fall back to approximate search with an over-fetch. Tags in
+ * practice select tens of files, well under the threshold.
+ */
+const EXACT_SCAN_MAX_CANDIDATES = 2000;
 
 /** Outcome of a `prune` run. */
 export interface PruneResult {
@@ -189,19 +198,77 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 
 		const { vector } = await generateEmbedding(this.env.AI, query);
 
-		// When a tag filter is requested, post-filter HNSW output. Pull
-		// extra candidates up front so the final result set still has
-		// `limit` entries after filtering — otherwise a restrictive tag set
-		// would starve the response. The 10x multiplier is a pragmatic cap;
-		// very selective filters may still return fewer than `limit`.
+		// Tag filters are resolved before scoring, not after.
+		//
+		// Post-filtering HNSW output meant asking the graph for `limit * 10`
+		// candidates and discarding untagged ones, so a tagged file that
+		// didn't crack the global top-N was invisible however well it matched.
+		// In practice `search("lessons learned", tags: ["core"])` missed
+		// learnings.md entirely and returned a single result for other
+		// queries. Scoring the tagged set directly is exact, and for the set
+		// sizes tags produce it is also cheaper than an over-fetch.
 		const tagFilter = tags && tags.length > 0 ? this.resolveTagIntersection(tags) : null;
-		const overshoot = tagFilter ? limit * 10 : timeWeight ? limit * 3 : limit;
 
-		const rawAll = hnsw.search(vector, overshoot);
-		const rawResults = tagFilter ? rawAll.filter((r) => tagFilter.has(r.id)) : rawAll;
+		if (tagFilter) {
+			// Guard against a tag so broad that an exact scan would mean
+			// deserialising most of the index. Above the threshold, fall back
+			// to the approximate path with a generous over-fetch.
+			if (tagFilter.size <= EXACT_SCAN_MAX_CANDIDATES) {
+				const scored = this.exactScan(vector, tagFilter);
+				return this.rankResults(scored, limit, timeWeight);
+			}
+			const overshoot = hnsw.search(vector, limit * 10);
+			return this.rankResults(
+				overshoot.filter((r) => tagFilter.has(r.id)),
+				limit,
+				timeWeight,
+			);
+		}
 
+		const rawResults = hnsw.search(vector, timeWeight ? limit * 3 : limit);
+		return this.rankResults(rawResults, limit, timeWeight);
+	}
+
+	/**
+	 * Score `query` against a specific set of paths, exactly.
+	 *
+	 * Reads each candidate's stored embedding and computes cosine similarity
+	 * directly, bypassing the graph. Exact by construction, so no candidate
+	 * can be missed because of where it sits in the HNSW topology.
+	 */
+	private exactScan(query: number[], allowed: Set<string>): Array<{ id: string; score: number }> {
+		const scored: Array<{ id: string; score: number }> = [];
+		const cursor = this.ctx.storage.sql.exec<{ path: string; embedding: ArrayBuffer | Uint8Array }>(
+			"SELECT path, embedding FROM memories",
+		);
+
+		for (const row of cursor) {
+			if (!allowed.has(row.path)) continue;
+			try {
+				const raw = row.embedding;
+				const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+				const embedding = JSON.parse(new TextDecoder().decode(bytes)) as number[];
+				scored.push({ id: row.path, score: cosineSimilarity(query, embedding) });
+			} catch (e) {
+				console.error(`Failed to score ${row.path} during exact scan:`, e);
+			}
+		}
+
+		return scored;
+	}
+
+	/**
+	 * Apply optional recency weighting and truncate to `limit`.
+	 *
+	 * Shared by the approximate and exact paths so both rank identically.
+	 */
+	private rankResults(
+		results: Array<{ id: string; score: number }>,
+		limit: number,
+		timeWeight: boolean,
+	): Array<{ id: string; score: number }> {
 		if (!timeWeight) {
-			return rawResults.slice(0, limit);
+			return [...results].sort((a, b) => b.score - a.score).slice(0, limit);
 		}
 
 		// Exponential decay rerank: weight = 0.5^(age/halfLife) with a
@@ -210,7 +277,7 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		const now = Date.now();
 		const halfLifeMs = 30 * 24 * 60 * 60 * 1000;
 
-		return rawResults
+		return results
 			.map((r) => {
 				const row = [
 					...this.ctx.storage.sql.exec<{ updated_at: number }>(
