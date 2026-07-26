@@ -17,6 +17,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { unauthorizedResponse, validateAuth } from "./auth";
 import { runReflection } from "./reflection";
+import { getMemoryIndex } from "./search/client";
 import { createServer } from "./server";
 import type { Env } from "./types";
 
@@ -82,7 +83,7 @@ export default {
 	},
 
 	/**
-	 * Scheduled handler for daily reflection.
+	 * Scheduled handler for daily reflection and index hygiene.
 	 *
 	 * Triggered by the cron at 6am UTC. Awaits the reflection directly
 	 * rather than using `ctx.waitUntil` — cron handlers already keep the
@@ -91,6 +92,24 @@ export default {
 	 * Cloudflare dashboard) instead of being swallowed inside `then()`.
 	 */
 	async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+		// Prune first. Reflection reads the index to decide what to consolidate,
+		// so it should see the same index a user's search would — not one still
+		// carrying vectors for archives that a denylist rule has since excluded.
+		//
+		// Isolated in its own try/catch: a prune failure is a hygiene problem,
+		// not a reason to skip the day's reflection.
+		try {
+			const prune = await getMemoryIndex(env).prune();
+			if (prune.pruned > 0) {
+				console.log(
+					`Pruned ${prune.pruned} denylisted vectors (${prune.remaining} remain):`,
+					prune.byReason,
+				);
+			}
+		} catch (e) {
+			console.error("Index prune failed:", e);
+		}
+
 		const result = await runReflection(env);
 		if (result.success) {
 			console.log(`Reflection completed for ${result.date}: ${result.summary}`);

@@ -181,17 +181,42 @@ export async function saveConversationIndex(
 	await storage.write(CONVERSATION_INDEX_PATH, JSON.stringify(index, null, 2));
 }
 
+export interface IndexSessionsResult {
+	added: number;
+	updated: number;
+	unchanged: number;
+	/**
+	 * Exchanges belonging to sessions that changed in this batch. These are
+	 * the only ones needing a fresh embedding.
+	 */
+	changedExchanges: ConversationExchange[];
+	/**
+	 * Exchange IDs that existed before this batch and no longer do — a
+	 * rewritten session usually yields a different set. Their vectors have to
+	 * be deleted or they linger as unreachable search hits.
+	 */
+	removedExchangeIds: string[];
+}
+
 /**
- * Index a batch of sessions (called from sync script)
+ * Index a batch of sessions (called from the sync script).
+ *
+ * Reports which exchanges changed rather than leaving the caller to re-embed
+ * the whole index. Embedding is the expensive part — one Workers AI call per
+ * exchange — and re-running it across every exchange on every sync does not
+ * fit in a single Worker invocation once the corpus reaches a few hundred
+ * sessions.
  */
 export async function indexSessions(
 	storage: R2Storage,
 	sessions: Array<{ sessionId: string; project: string; data: OpenCodeSession }>,
-): Promise<{ added: number; updated: number; unchanged: number }> {
+): Promise<IndexSessionsResult> {
 	const index = await loadConversationIndex(storage);
 	let added = 0;
 	let updated = 0;
 	let unchanged = 0;
+	const changedExchanges: ConversationExchange[] = [];
+	const removedExchangeIds: string[] = [];
 
 	for (const { sessionId, project, data } of sessions) {
 		const contentHash = hashContent(JSON.stringify(data));
@@ -203,13 +228,22 @@ export async function indexSessions(
 		}
 
 		// Remove old exchanges for this session
-		const existingCount = index.exchanges.filter((e) => e.sessionId === sessionId).length;
+		const previous = index.exchanges.filter((e) => e.sessionId === sessionId);
+		const existingCount = previous.length;
 		index.exchanges = index.exchanges.filter((e) => e.sessionId !== sessionId);
 
 		// Parse and add new exchanges
 		const newExchanges = parseOpenCodeSession(sessionId, project, data);
 		index.exchanges.push(...newExchanges);
 		index.sessionHashes[sessionId] = contentHash;
+		changedExchanges.push(...newExchanges);
+
+		// Exchange IDs are derived from message position, so a session edited
+		// mid-history can drop IDs that previously existed.
+		const survivingIds = new Set(newExchanges.map((e) => e.id));
+		for (const old of previous) {
+			if (!survivingIds.has(old.id)) removedExchangeIds.push(old.id);
+		}
 
 		// Also store the raw session data for expand_conversation
 		await storage.write(
@@ -225,7 +259,17 @@ export async function indexSessions(
 	}
 
 	await saveConversationIndex(storage, index);
-	return { added, updated, unchanged };
+	return { added, updated, unchanged, changedExchanges, removedExchangeIds };
+}
+
+/** Index path for an exchange's embedding. */
+export function exchangeIndexPath(exchangeId: string): string {
+	return `${CONVERSATIONS_PREFIX.replace("sessions/", "exchanges/")}${exchangeId}.txt`;
+}
+
+/** Text embedded for an exchange. Kept here so indexing and search agree. */
+export function exchangeEmbeddingText(exchange: ConversationExchange): string {
+	return `[${exchange.project}] ${exchange.userPrompt}\n\nResponse: ${exchange.assistantResponse}`;
 }
 
 /**

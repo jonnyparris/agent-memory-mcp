@@ -95,7 +95,7 @@ describe("MCP Tools", () => {
 			expect(toolNames).toContain("search");
 			expect(toolNames).toContain("history");
 			expect(toolNames).toContain("rollback");
-			expect(toolNames).toContain("execute");
+			expect(toolNames).toContain("prune_index");
 		});
 	});
 
@@ -374,59 +374,39 @@ describe("MCP Tools", () => {
 		});
 	});
 
-	describe("execute tool", () => {
-		it("should execute simple code", async () => {
-			const result = await callTool("execute", {
-				code: "return 1 + 2",
+	describe("prune_index tool", () => {
+		it("should not index denylisted paths, but should still store them", async () => {
+			const denied = "memory/reflections/archive/2020-01-01.md";
+			const write = await callTool("write", {
+				path: denied,
+				content: "# Archived reflection\n\nSuperseded snapshot about widget latency.",
 			});
 
-			const content = parseToolJson(result.result.content[0].text);
-			expect(content.result).toBe(3);
+			const writeContent = parseToolJson(write.result.content[0].text);
+			expect(writeContent.index_skipped).toBe("superseded reflection archive");
+
+			// The file is still retrievable — denylisting affects recall, not storage.
+			const read = await callTool("read", { path: denied });
+			expect(read.result.content[0].text).toContain("widget latency");
 		});
 
-		it("should have access to memory.read", async () => {
-			// Write a file first
+		it("should report matches without mutating the index on dry_run", async () => {
 			await callTool("write", {
-				path: "test-tools/execute-read.md",
-				content: "Execute test content",
+				path: "memory/_bench/dry-run-probe.md",
+				content: "benchmark fixture content",
 			});
 
-			const result = await callTool("execute", {
-				code: 'return await memory.read("test-tools/execute-read.md")',
-			});
-
-			const content = parseToolJson(result.result.content[0].text);
-			expect(content.result).toBe("Execute test content");
+			const before = parseToolJson(
+				(await callTool("prune_index", { dry_run: true })).result.content[0].text,
+			);
+			expect(before.dryRun).toBe(true);
+			expect(before.pruned).toBe(0);
+			expect(before.remaining).toBe(before.scanned);
 		});
 
-		it("should have access to memory.list", async () => {
-			const result = await callTool("execute", {
-				code: "const files = await memory.list('test-tools'); return files.length",
-			});
-
-			const content = parseToolJson(result.result.content[0].text);
-			expect(typeof content.result).toBe("number");
-		});
-
-		it("should handle syntax errors", async () => {
-			const result = await callTool("execute", {
-				code: "return {{{invalid",
-			});
-
-			expect(result.result.isError).toBe(true);
-			const content = parseToolJson(result.result.content[0].text);
-			expect(content.error).toBe("Execution failed");
-		});
-
-		it("should handle runtime errors", async () => {
-			const result = await callTool("execute", {
-				code: 'throw new Error("Test error")',
-			});
-
-			expect(result.result.isError).toBe(true);
-			const content = parseToolJson(result.result.content[0].text);
-			expect(content.details).toContain("Test error");
-		});
+		// Whether prune actually removes staged legacy vectors is covered in
+		// prune.test.ts, which reaches into the DO to set up index state that
+		// the write-time denylist now makes unreachable.
 	});
 
 	describe("authentication", () => {

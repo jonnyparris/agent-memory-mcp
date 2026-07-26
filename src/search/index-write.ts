@@ -4,6 +4,7 @@ import { extractSnippet } from "../truncate";
 import type { Env } from "../types";
 import { parseWikilinks } from "../wikilinks";
 import { getMemoryIndex } from "./client";
+import { indexSkipReason } from "./indexable";
 
 export interface IndexWriteResult {
 	success: boolean;
@@ -18,6 +19,13 @@ export interface IndexWriteResult {
 	 * index will become consistent within ~1–3s.
 	 */
 	index_deferred?: boolean;
+	/**
+	 * Set when `path` is on the index denylist (see `./indexable`). The R2
+	 * write succeeded but the file deliberately received no embedding, so it
+	 * will never appear in `search` results. Surfaced explicitly because a
+	 * silent skip is indistinguishable from a bug at the call site.
+	 */
+	index_skipped?: string;
 }
 
 export interface IndexWriteOptions {
@@ -115,6 +123,30 @@ export async function indexWrite(
 		tags,
 		links,
 	};
+
+	// Denylisted paths still land in R2 — they just don't get a vector.
+	//
+	// The `delete` is not redundant. A file written before its rule existed
+	// already has a stale vector, and rewriting it is the natural moment to
+	// drop it, so the index converges on the current ruleset without waiting
+	// for the next `prune`. Deferred via `waitUntil` where possible: bulk
+	// archive writes land 200 at a time and shouldn't each pay a blocking DO
+	// round-trip for what is usually a no-op.
+	const skipReason = indexSkipReason(path);
+	if (skipReason) {
+		response.index_skipped = skipReason;
+		const dropStale = getMemoryIndex(env)
+			.delete(path)
+			.catch((e) => {
+				console.error(`Failed to drop stale vector for denylisted ${path}:`, e);
+			});
+		if (options.ctx) {
+			options.ctx.waitUntil(dropStale);
+		} else {
+			await dropStale;
+		}
+		return response;
+	}
 
 	const wantOverlaps = options.detectOverlaps && path.startsWith("memory/");
 	// `waitForIndex` defaults to true to preserve legacy behaviour. Overlap

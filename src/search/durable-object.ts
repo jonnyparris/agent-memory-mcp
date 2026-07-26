@@ -1,9 +1,25 @@
 import { DurableObject } from "cloudflare:workers";
 import { EMBEDDING_DIMENSIONS, generateEmbedding } from "./embeddings";
 import { HNSWIndex } from "./hnsw";
+import { indexSkipReason } from "./indexable";
 
 interface DOEnv {
 	AI: Ai;
+}
+
+/** Outcome of a `prune` run. */
+export interface PruneResult {
+	/** Indexed paths examined. */
+	scanned: number;
+	/** Vectors actually removed (always 0 when `dryRun`). */
+	pruned: number;
+	/** Vectors that matched the denylist, whether or not they were removed. */
+	matched: number;
+	/** Vectors left in the index after the run. */
+	remaining: number;
+	/** Match counts keyed by denylist reason. */
+	byReason: Record<string, number>;
+	dryRun: boolean;
 }
 
 /**
@@ -23,6 +39,7 @@ export interface MemoryIndexRpc {
 		tags?: string[];
 	}): Promise<Array<{ id: string; score: number }>>;
 	delete(path: string): Promise<{ success: true }>;
+	prune(args?: { dryRun?: boolean }): Promise<PruneResult>;
 	stats(): Promise<{ indexed_files: number; index_size: number }>;
 	tags(): Promise<{ tags: Array<{ tag: string; count: number }> }>;
 	filesWithTags(tags: string[]): Promise<{ paths: string[] }>;
@@ -213,6 +230,75 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		return { success: true };
 	}
 
+	/**
+	 * Drop vectors for paths that the current denylist excludes.
+	 *
+	 * Rules in `./indexable` only govern writes, so any file indexed before
+	 * its rule existed keeps a stale vector indefinitely. This re-tests every
+	 * indexed path and removes the ones that now fail. R2 is untouched: the
+	 * files stay readable via `read` and `list`, they just stop competing for
+	 * recall.
+	 *
+	 * The HNSW graph is rebuilt from the surviving rows rather than mutated
+	 * in place. `HNSWIndex.delete` unlinks a node from its neighbours without
+	 * re-linking them to each other, so removing a large fraction of nodes
+	 * one-by-one leaves a sparsely-connected graph and can strand whole
+	 * regions from the entry point — degrading recall for the files we kept.
+	 * A rebuild is O(n log n) on a few hundred vectors and reuses the
+	 * embeddings already in SQL, so it costs no Workers AI calls.
+	 *
+	 * Call with `dryRun` first on a live index; the counts are the only
+	 * preview available.
+	 */
+	async prune(args: { dryRun?: boolean } = {}): Promise<PruneResult> {
+		await this.ensureReady();
+		const { dryRun = false } = args;
+
+		const rows = [...this.ctx.storage.sql.exec<{ path: string }>("SELECT path FROM memories")];
+
+		const matched: Array<{ path: string; reason: string }> = [];
+		for (const row of rows) {
+			const reason = indexSkipReason(row.path);
+			if (reason) matched.push({ path: row.path, reason });
+		}
+
+		const byReason: Record<string, number> = {};
+		for (const m of matched) {
+			byReason[m.reason] = (byReason[m.reason] ?? 0) + 1;
+		}
+
+		if (dryRun) {
+			return {
+				scanned: rows.length,
+				pruned: 0,
+				matched: matched.length,
+				remaining: rows.length,
+				byReason,
+				dryRun: true,
+			};
+		}
+
+		for (const m of matched) {
+			this.ctx.storage.sql.exec("DELETE FROM memories WHERE path = ?", m.path);
+			this.ctx.storage.sql.exec("DELETE FROM file_tags WHERE path = ?", m.path);
+			this.ctx.storage.sql.exec("DELETE FROM file_links WHERE source = ?", m.path);
+		}
+
+		// Force a cold rebuild from the surviving SQL rows.
+		this.hnsw = null;
+		this.initialized = false;
+		const hnsw = await this.ensureReady();
+
+		return {
+			scanned: rows.length,
+			pruned: matched.length,
+			matched: matched.length,
+			remaining: hnsw.size(),
+			byReason,
+			dryRun: false,
+		};
+	}
+
 	async stats(): Promise<{ indexed_files: number; index_size: number }> {
 		const hnsw = await this.ensureReady();
 		const row = [
@@ -276,6 +362,10 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 			if (url.pathname === "/delete" && request.method === "POST") {
 				const { path } = (await request.json()) as { path: string };
 				return jsonResponse(await this.delete(path));
+			}
+			if (url.pathname === "/prune" && request.method === "POST") {
+				const body = (await request.json().catch(() => ({}))) as { dryRun?: boolean };
+				return jsonResponse(await this.prune(body));
 			}
 			if (url.pathname === "/stats") {
 				return jsonResponse(await this.stats());

@@ -1,12 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+	exchangeEmbeddingText,
+	exchangeIndexPath,
 	expandConversation,
 	getConversationStats,
 	indexSessions,
 	loadConversationIndex,
 } from "./conversations";
-import { executeCode } from "./execute";
 import { errResult, okResult, registerTool } from "./helpers";
 import {
 	archiveReflection,
@@ -15,7 +16,7 @@ import {
 } from "./reflection/staging";
 import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
-import { getMemoryIndex } from "./search/client";
+import { getConversationIndex, getMemoryIndex } from "./search/client";
 import { EmptyContentError, indexWrite } from "./search/index-write";
 import { createR2Storage } from "./storage/r2";
 import { extractSnippet, truncateWithMeta } from "./truncate";
@@ -178,6 +179,12 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			};
 			if (result.embedding_error) response.embedding_error = result.embedding_error;
 			if (result.index_deferred) response.index_deferred = true;
+			if (result.index_skipped) {
+				response.index_skipped = result.index_skipped;
+				response.index_skipped_hint =
+					"This path is on the index denylist, so the file was stored but not embedded. " +
+					"It is readable via read/list but will never appear in search results.";
+			}
 			if (result.overlaps && result.overlaps.length > 0) {
 				response.overlaps = result.overlaps;
 				response.overlap_hint =
@@ -188,6 +195,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			const parts = [`Wrote ${path} (${content.length} bytes)`];
 			if (result.tags.length > 0) parts.push(`tags: ${result.tags.join(", ")}`);
 			if (result.index_deferred) parts.push("index update deferred");
+			if (result.index_skipped) parts.push(`not indexed (${result.index_skipped})`);
 			if (result.overlaps && result.overlaps.length > 0) {
 				parts.push(`${result.overlaps.length} similar file(s) already exist`);
 			}
@@ -274,6 +282,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 							bytes: file.content.length,
 							...(result.embedding_error ? { embedding_error: result.embedding_error } : {}),
 							...(result.index_deferred ? { index_deferred: true } : {}),
+							...(result.index_skipped ? { index_skipped: result.index_skipped } : {}),
 							...(result.overlaps && result.overlaps.length > 0
 								? { overlaps: result.overlaps }
 								: {}),
@@ -395,25 +404,32 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			const effectiveLimit = limit ?? 5;
 			const searchScope = scope ?? "memory";
 
-			// Conversations need time-weighted scoring and overshoot since the
-			// result set is filtered by path prefix after the DO returns.
-			const overshoot = searchScope === "memory" ? effectiveLimit : effectiveLimit * 2;
-			const index = getMemoryIndex(env);
-			const rawResults = await index.search({
-				query,
-				limit: overshoot,
-				tags,
-				timeWeight: searchScope !== "memory",
-			});
-
-			const memoryHits =
+			// Memory and conversations live in separate DO instances, so each
+			// scope queries only the index it cares about and asks for exactly
+			// `limit` results. The previous single-index arrangement had to
+			// over-fetch and then discard cross-namespace hits, which let a
+			// large conversation corpus starve memory results.
+			const [memoryHits, conversationHits] = await Promise.all([
 				searchScope === "conversations"
-					? []
-					: rawResults.filter((r) => !r.id.startsWith("conversations/exchanges/"));
-			const conversationHits =
+					? Promise.resolve([])
+					: getMemoryIndex(env).search({
+							query,
+							limit: effectiveLimit,
+							tags,
+							timeWeight: false,
+						}),
 				searchScope === "memory"
-					? []
-					: rawResults.filter((r) => r.id.startsWith("conversations/exchanges/"));
+					? Promise.resolve([])
+					: getConversationIndex(env).search({
+							query,
+							limit: effectiveLimit,
+							// Recency matters more for conversations than for
+							// curated memory files: an exchange from last week is
+							// usually likelier to be what you meant than an
+							// equally-similar one from a year ago.
+							timeWeight: true,
+						}),
+			]);
 
 			const enrichedMemory = await Promise.all(
 				memoryHits.slice(0, effectiveLimit).map(async (r) => {
@@ -537,31 +553,26 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 
 	registerTool(
 		server,
-		"execute",
+		"prune_index",
 		{
 			description:
-				"Execute a JavaScript async function against memory contents for complex queries. " +
-				"The function receives `memory.read(path)` and `memory.list(path?)` and must return a value. " +
-				"SECURITY: code runs inside the Worker's V8 isolate with access to globals like `fetch`, `crypto`, " +
-				"and network I/O. Only use with trusted input — this is not a sandbox against malicious code. " +
-				"Execution is bounded by the Worker's CPU limits; set a timeout in your own code for long queries.",
+				"Remove vectors for files the index denylist excludes (superseded archives, " +
+				"machine-generated reports, benchmark fixtures, non-prose file types). Files stay in R2 " +
+				"and stay readable via read/list — they just stop competing for search recall. " +
+				"Denylist rules only apply at write time, so this is how files indexed before a rule " +
+				"existed get cleaned up. Runs automatically on the daily cron. Pass dry_run to preview counts.",
 			inputSchema: {
-				code: z
-					.string()
-					.describe(
-						"Body of an async function. Has access to `memory.read(path)` and `memory.list(path?)`. Return a value.",
-					),
+				dry_run: z
+					.boolean()
+					.default(false)
+					.describe("Report what would be pruned without changing the index."),
 			},
 		},
-		async ({ code }: { code: string }) => {
-			const memoryApi = {
-				read: async (filePath: string) => {
-					const file = await storage.read(filePath);
-					return file?.content ?? null;
-				},
-				list: async (filePath?: string) => storage.list(filePath, true),
-			};
-			return executeCode(code, memoryApi);
+		async ({ dry_run }: { dry_run?: boolean }) => {
+			return (await getMemoryIndex(env).prune({ dryRun: dry_run ?? false })) as unknown as Record<
+				string,
+				unknown
+			>;
 		},
 	);
 
@@ -590,26 +601,23 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				};
 			}
 			const effectiveLimit = limit ?? 5;
-			const rawResults = await getMemoryIndex(env).search({
+			const rawResults = await getConversationIndex(env).search({
 				query,
-				limit: effectiveLimit * 2,
+				limit: effectiveLimit,
 				timeWeight: true,
 			});
-			const results = rawResults
-				.filter((r) => r.id.startsWith("conversations/exchanges/"))
-				.slice(0, effectiveLimit)
-				.map((r) => {
-					const exchangeId = r.id.replace("conversations/exchanges/", "").replace(".txt", "");
-					const exchange = conversationIndex.exchanges.find((e) => e.id === exchangeId);
-					return {
-						id: exchangeId,
-						score: r.score,
-						project: exchange?.project,
-						userPrompt: exchange?.userPrompt?.slice(0, 200),
-						timestamp: exchange?.timestamp,
-						sessionId: exchange?.sessionId,
-					};
-				});
+			const results = rawResults.slice(0, effectiveLimit).map((r) => {
+				const exchangeId = r.id.replace("conversations/exchanges/", "").replace(".txt", "");
+				const exchange = conversationIndex.exchanges.find((e) => e.id === exchangeId);
+				return {
+					id: exchangeId,
+					score: r.score,
+					project: exchange?.project,
+					userPrompt: exchange?.userPrompt?.slice(0, 200),
+					timestamp: exchange?.timestamp,
+					sessionId: exchange?.sessionId,
+				};
+			});
 			return {
 				results,
 				hint: "Use expand_conversation with sessionId to see full context",
@@ -652,25 +660,49 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				})),
 			);
 
-			// Push each exchange into the semantic index. Runs sequentially so
-			// we don't blow past Workers AI rate limits on large imports.
-			const conversationIndex = await loadConversationIndex(storage);
-			const index = getMemoryIndex(env);
+			// Embed only what changed.
+			//
+			// This used to walk every exchange in the whole index on every
+			// call, which is one Workers AI round-trip each. Past a few hundred
+			// sessions that cannot finish inside a single invocation, so the
+			// index never grew beyond the first couple of exchanges. Syncing is
+			// incremental now: unchanged sessions cost nothing.
+			const index = getConversationIndex(env);
+
 			let indexed = 0;
-			for (const exchange of conversationIndex.exchanges) {
-				const content = `[${exchange.project}] ${exchange.userPrompt}\n\nResponse: ${exchange.assistantResponse}`;
-				await index.update({
-					path: `conversations/exchanges/${exchange.id}.txt`,
-					content,
-				});
-				indexed++;
+			const failures: Array<{ id: string; error: string }> = [];
+			for (const exchange of result.changedExchanges) {
+				try {
+					await index.update({
+						path: exchangeIndexPath(exchange.id),
+						content: exchangeEmbeddingText(exchange),
+					});
+					indexed++;
+				} catch (e) {
+					// One bad exchange shouldn't abort the batch — the sync
+					// script would retry the whole session and hit it again.
+					failures.push({ id: exchange.id, error: e instanceof Error ? e.message : String(e) });
+				}
 			}
+
+			let removed = 0;
+			for (const exchangeId of result.removedExchangeIds) {
+				try {
+					await index.delete(exchangeIndexPath(exchangeId));
+					removed++;
+				} catch {
+					// A vector that was never indexed is already in the desired state.
+				}
+			}
+
 			return {
 				success: true,
 				added: result.added,
 				updated: result.updated,
 				unchanged: result.unchanged,
-				totalIndexed: indexed,
+				embedded: indexed,
+				removed,
+				...(failures.length > 0 ? { failures } : {}),
 			};
 		},
 	);

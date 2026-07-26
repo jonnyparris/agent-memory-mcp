@@ -117,16 +117,22 @@ describeE2E("E2E: Deployed Worker", () => {
 			expect(data.results.length).toBeGreaterThan(0);
 		});
 
-		it("should execute code against memory", async () => {
-			const result = (await callTool("execute", {
-				code: `
-          const content = await memory.read("${testPath}");
-          return content ? content.length : 0;
-        `,
-			})) as { result: { content: Array<{ text: string }> } };
+		it("should report index prune candidates without mutating the index", async () => {
+			const result = (await callTool("prune_index", { dry_run: true })) as {
+				result: { content: Array<{ text: string }> };
+			};
 
-			const data = JSON.parse(result.result.content[0].text) as { result: number };
-			expect(data.result).toBe(testContent.length);
+			const data = JSON.parse(result.result.content[0].text) as {
+				scanned: number;
+				pruned: number;
+				remaining: number;
+				dryRun: boolean;
+			};
+
+			expect(data.dryRun).toBe(true);
+			expect(data.pruned).toBe(0);
+			expect(data.remaining).toBe(data.scanned);
+			expect(data.scanned).toBeGreaterThan(0);
 		});
 	});
 });

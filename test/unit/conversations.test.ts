@@ -315,6 +315,84 @@ describe("conversation index operations", () => {
 			expect(result.unchanged).toBe(1);
 		});
 
+		// The caller embeds one exchange per Workers AI call, so these fields
+		// decide how much work a sync costs. If an unchanged session reported
+		// its exchanges as changed, every sync would re-embed the whole corpus
+		// and stop fitting in a single Worker invocation.
+		it("should report changed exchanges only for sessions that changed", async () => {
+			const session = (assistantReply: string) => [
+				{
+					sessionId: "session-1",
+					project: "my-project",
+					data: {
+						messages: [
+							{ role: "user" as const, content: "How do I batch writes?" },
+							{ role: "assistant" as const, content: assistantReply },
+						],
+					},
+				},
+			];
+
+			const first = await indexSessions(storage, session("Use write_many."));
+			expect(first.changedExchanges).toHaveLength(1);
+			expect(first.changedExchanges[0].sessionId).toBe("session-1");
+			expect(first.removedExchangeIds).toEqual([]);
+
+			// Byte-identical resync: nothing to embed.
+			const unchanged = await indexSessions(storage, session("Use write_many."));
+			expect(unchanged.unchanged).toBe(1);
+			expect(unchanged.changedExchanges).toEqual([]);
+			expect(unchanged.removedExchangeIds).toEqual([]);
+
+			// Edited session: the exchange needs re-embedding.
+			const edited = await indexSessions(storage, session("Use write_many, max 50 per call."));
+			expect(edited.updated).toBe(1);
+			expect(edited.changedExchanges).toHaveLength(1);
+		});
+
+		it("should report exchange IDs that disappear when a session shrinks", async () => {
+			const twoExchanges = [
+				{
+					sessionId: "session-1",
+					project: "my-project",
+					data: {
+						messages: [
+							{ role: "user" as const, content: "First question" },
+							{ role: "assistant" as const, content: "First answer" },
+							{ role: "user" as const, content: "Second question" },
+							{ role: "assistant" as const, content: "Second answer" },
+						],
+					},
+				},
+			];
+
+			const before = await indexSessions(storage, twoExchanges);
+			expect(before.changedExchanges).toHaveLength(2);
+			const originalIds = before.changedExchanges.map((e) => e.id);
+
+			// Rewritten with only the first exchange — the second one's vector
+			// would otherwise linger as an unreachable search hit.
+			const oneExchange = [
+				{
+					sessionId: "session-1",
+					project: "my-project",
+					data: {
+						messages: [
+							{ role: "user" as const, content: "First question" },
+							{ role: "assistant" as const, content: "First answer" },
+						],
+					},
+				},
+			];
+
+			const after = await indexSessions(storage, oneExchange);
+
+			expect(after.changedExchanges).toHaveLength(1);
+			expect(after.removedExchangeIds).toHaveLength(1);
+			expect(originalIds).toContain(after.removedExchangeIds[0]);
+			expect(after.removedExchangeIds).not.toContain(after.changedExchanges[0].id);
+		});
+
 		it("should update changed sessions", async () => {
 			const sessions = [
 				{
