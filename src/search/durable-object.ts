@@ -125,16 +125,14 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		const hnsw = await this.ensureReady();
 		const { path, content, tags, links } = args;
 
-		const { vector } = await generateEmbedding(this.env.AI, content);
-
-		const embeddingBlob = new TextEncoder().encode(JSON.stringify(vector));
-		this.ctx.storage.sql.exec(
-			"INSERT OR REPLACE INTO memories (path, embedding, updated_at) VALUES (?, ?, ?)",
-			path,
-			embeddingBlob,
-			Date.now(),
-		);
-
+		// Tags and links are committed before the embedding call, which is the
+		// only step here that can realistically fail (model length limits,
+		// Workers AI availability). Embedding first meant a rejected file lost
+		// its tags and wikilinks too, so `brag-sheet.md` reported the tags it
+		// had parsed while none of them reached the index. Persisting metadata
+		// first degrades gracefully: the file stays tag-filterable and its
+		// backlinks stay intact even when it has no usable vector.
+		//
 		// Tags are authoritative from the caller (the write tool parses
 		// frontmatter), so delete-then-insert within a single update keeps
 		// the stored set in sync without read-modify-write hazards.
@@ -163,6 +161,16 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 				);
 			}
 		}
+
+		const { vector } = await generateEmbedding(this.env.AI, content);
+
+		const embeddingBlob = new TextEncoder().encode(JSON.stringify(vector));
+		this.ctx.storage.sql.exec(
+			"INSERT OR REPLACE INTO memories (path, embedding, updated_at) VALUES (?, ?, ?)",
+			path,
+			embeddingBlob,
+			Date.now(),
+		);
 
 		if (hnsw.size() > 0) hnsw.delete(path);
 		hnsw.insert(path, vector);

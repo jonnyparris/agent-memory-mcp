@@ -58,7 +58,7 @@ describe("generateEmbedding", () => {
 		expect(result.vector.every((v) => typeof v === "number" && !Number.isNaN(v))).toBe(true);
 	});
 
-	it("should truncate very long text to 32000 characters", async () => {
+	it("should truncate very long text to the 20000-character embed budget", async () => {
 		let capturedText = "";
 		const mockAI = {
 			run: async (_model: string, inputs: { text: string }) => {
@@ -70,10 +70,10 @@ describe("generateEmbedding", () => {
 		const longText = "a".repeat(50000);
 		await generateEmbedding(mockAI as unknown as Ai, longText);
 
-		expect(capturedText.length).toBe(32000);
+		expect(capturedText.length).toBe(20000);
 	});
 
-	it("should not truncate text under 32000 characters", async () => {
+	it("should not truncate text under the embed budget", async () => {
 		let capturedText = "";
 		const mockAI = {
 			run: async (_model: string, inputs: { text: string }) => {
@@ -88,6 +88,58 @@ describe("generateEmbedding", () => {
 		expect(capturedText.length).toBe(1000);
 	});
 
+	// A character budget only approximates the tokeniser. brag-sheet.md fit
+	// the old 32000-character cap and still tokenised to 8908 against a
+	// 8192-token model limit, so the write reported success while the file
+	// kept a stale vector.
+	it("should back off and retry when the model rejects the input as too long", async () => {
+		const attempts: number[] = [];
+		const mockAI = {
+			run: async (_model: string, inputs: { text: string }) => {
+				attempts.push(inputs.text.length);
+				if (attempts.length === 1) {
+					throw new Error("3030: Sequence too long: 8908 > 8192");
+				}
+				return { data: [{ embedding: mockEmbedding(inputs.text) }] };
+			},
+		};
+
+		const result = await generateEmbedding(mockAI as unknown as Ai, "a".repeat(40000));
+
+		expect(attempts).toEqual([20000, 10000]);
+		expect(result.vector.length).toBeGreaterThan(0);
+	});
+
+	it("should give up after repeated length rejections", async () => {
+		let calls = 0;
+		const mockAI = {
+			run: async () => {
+				calls++;
+				throw new Error("3030: Sequence too long: 9000 > 8192");
+			},
+		};
+
+		await expect(generateEmbedding(mockAI as unknown as Ai, "a".repeat(40000))).rejects.toThrow(
+			/Sequence too long/,
+		);
+		expect(calls).toBe(3);
+	});
+
+	it("should not retry errors unrelated to input length", async () => {
+		let calls = 0;
+		const mockAI = {
+			run: async () => {
+				calls++;
+				throw new Error("5000: Internal error");
+			},
+		};
+
+		await expect(generateEmbedding(mockAI as unknown as Ai, "hello")).rejects.toThrow(
+			/Internal error/,
+		);
+		expect(calls).toBe(1);
+	});
+
 	it("should handle text exactly at truncation limit", async () => {
 		let capturedText = "";
 		const mockAI = {
@@ -97,10 +149,10 @@ describe("generateEmbedding", () => {
 			},
 		};
 
-		const exactText = "a".repeat(32000);
+		const exactText = "a".repeat(20000);
 		await generateEmbedding(mockAI as unknown as Ai, exactText);
 
-		expect(capturedText.length).toBe(32000);
+		expect(capturedText.length).toBe(20000);
 	});
 });
 
@@ -187,8 +239,8 @@ describe("generateEmbeddings", () => {
 		const texts = ["a".repeat(50000), "b".repeat(50000), "short"];
 		await generateEmbeddings(mockAI as unknown as Ai, texts);
 
-		expect(capturedTexts[0].length).toBe(32000);
-		expect(capturedTexts[1].length).toBe(32000);
+		expect(capturedTexts[0].length).toBe(20000);
+		expect(capturedTexts[1].length).toBe(20000);
 		expect(capturedTexts[2].length).toBe(5);
 	});
 });
