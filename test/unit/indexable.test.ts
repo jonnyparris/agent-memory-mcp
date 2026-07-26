@@ -15,6 +15,13 @@ describe("index denylist", () => {
 				"machine-generated backlog-groom report",
 			],
 			["memory/workload/plans/archive/old-plan.md", "archived plan"],
+			["memory/workload/plans/2026-07-25-improvement-proposals.md", "nightly reflection journal"],
+			[
+				"memory/workload/plans/2026-03-13-late-improvement-proposals.md",
+				"nightly reflection journal",
+			],
+			["memory/workload/plans/2026-01-31-nightly-reflection.md", "nightly reflection journal"],
+			["memory/workload/plans/2026-02-01-evening-reflection.md", "nightly reflection journal"],
 			["memory/_bench/many1.md", "benchmark fixture"],
 			["plans/signal-agent-architecture.svg", "non-prose file type"],
 			["memory/diagrams/flow.PNG", "non-prose file type"],
@@ -41,8 +48,13 @@ describe("index denylist", () => {
 			// and must survive the reports rule.
 			"memory/workload/backlog-groom/BRAPI/summaries/2026-03-06-batch-5.md",
 			"memory/workload/backlog-groom/BRAPI/actions/close-candidates.md",
-			// Current plans stay indexed; only plans/archive/ is excluded.
-			"memory/workload/plans/2026-07-25-improvement-proposals.md",
+			// One-off dated design and investigation docs are real content and
+			// must survive the journal rule — it targets recurring suffixes only.
+			"memory/workload/plans/2026-02-04-agent-memory-enhancements.md",
+			"memory/workload/plans/2026-02-02-brapi-cloudchamber-investigation.md",
+			"memory/workload/plans/2026-06-11-dodo-refactor-plan.md",
+			// Undated design docs likewise.
+			"memory/workload/plans/agent-memory-mcp-design.md",
 			"memory/patterns/worker-rpc.md",
 			"memory/reference/em-leveling-guide.md",
 		];

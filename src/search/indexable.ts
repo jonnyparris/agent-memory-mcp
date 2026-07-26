@@ -56,6 +56,26 @@ export const INDEX_DENYLIST: readonly DenyRule[] = [
 		reason: "archived plan",
 	},
 	{
+		// The nightly-reflect journal: 36 dated files sharing a section
+		// skeleton, one per run. They became the dominant noise floor as soon
+		// as the backlog-groom JSON was pruned — "lessons learned and gotchas"
+		// returned three of them and no core file.
+		//
+		// Excluding them is not a loss of information. The pipeline's whole
+		// purpose is to promote durable findings into learnings.md and the
+		// workload files, which stay indexed; the dated entry is the raw
+		// working-out kept for provenance. Callers that want a specific run
+		// read it by path — /nightly-reflect and /daily-briefing already do,
+		// and none of them discover it by search.
+		//
+		// Deliberately narrow: only the recurring journal suffixes match. The
+		// other ~35 dated files under plans/ are one-off design and
+		// investigation docs and remain indexed.
+		pattern:
+			/^memory\/workload\/plans\/\d{4}-\d{2}-\d{2}-(late-)?(improvement-proposals|nightly-reflection|evening-reflection)\.md$/,
+		reason: "nightly reflection journal",
+	},
+	{
 		// Benchmark fixtures from index performance testing. Never prose.
 		pattern: /^memory\/_bench\//,
 		reason: "benchmark fixture",
