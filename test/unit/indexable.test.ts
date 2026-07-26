@@ -23,6 +23,8 @@ describe("index denylist", () => {
 			["memory/workload/plans/2026-01-31-nightly-reflection.md", "nightly reflection journal"],
 			["memory/workload/plans/2026-02-01-evening-reflection.md", "nightly reflection journal"],
 			["memory/_bench/many1.md", "benchmark fixture"],
+			["scratch/agent-relay-onboarding-guide.md", "scratch working file"],
+			["scratch/nested/draft.md", "scratch working file"],
 			["plans/signal-agent-architecture.svg", "non-prose file type"],
 			["memory/diagrams/flow.PNG", "non-prose file type"],
 			["memory/assets/font.woff2", "non-prose file type"],
@@ -63,6 +65,13 @@ describe("index denylist", () => {
 			expect(shouldIndex(path)).toBe(true);
 			expect(indexSkipReason(path)).toBeNull();
 		});
+	});
+
+	it("only excludes scratch at the top level", () => {
+		// The finished copy lives under memory/ and must stay indexed even
+		// though a scratch draft of it exists.
+		expect(shouldIndex("memory/workload/agent-relay-onboarding-guide.md")).toBe(true);
+		expect(shouldIndex("memory/scratchpad-notes.md")).toBe(true);
 	});
 
 	it("does not treat a path merely containing 'archive' as archived", () => {

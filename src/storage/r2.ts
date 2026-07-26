@@ -42,34 +42,48 @@ export function createR2Storage(bucket: R2Bucket): R2Storage {
 			const prefix = path ? (path.endsWith("/") ? path : `${path}/`) : "";
 			const delimiter = recursive ? undefined : "/";
 
-			const listed = await bucket.list({
-				prefix,
-				delimiter,
-			});
-
 			const files: MemoryFileMetadata[] = [];
+			const seenPrefixes = new Set<string>();
 
-			for (const object of listed.objects) {
-				files.push({
-					path: object.key,
-					size: object.size,
-					updated_at: object.uploaded.toISOString(),
-					// md5 hex (no quotes) for simple puts — clients diff this
-					// against a local content hash to skip no-op downloads.
-					etag: object.etag,
-				});
-			}
+			// R2 paginates, and it does not promise to fill a page before
+			// setting `truncated` — a single call can return well under the
+			// limit and still have more behind a cursor. Ignoring that made
+			// `list` silently under-report: a bucket holding ~960 objects
+			// answered with 397 for one prefix and 685 for another, and files
+			// that were perfectly readable never appeared at all. Any audit
+			// built on those numbers is wrong in a way nothing surfaces, so
+			// always drain the cursor.
+			let cursor: string | undefined;
+			do {
+				const listed = await bucket.list({ prefix, delimiter, cursor });
 
-			// Include "directories" from delimited prefixes
-			if (listed.delimitedPrefixes) {
-				for (const prefix of listed.delimitedPrefixes) {
+				for (const object of listed.objects) {
 					files.push({
-						path: prefix,
-						size: 0,
-						updated_at: new Date().toISOString(),
+						path: object.key,
+						size: object.size,
+						updated_at: object.uploaded.toISOString(),
+						// md5 hex (no quotes) for simple puts — clients diff this
+						// against a local content hash to skip no-op downloads.
+						etag: object.etag,
 					});
 				}
-			}
+
+				// Include "directories" from delimited prefixes. Deduplicated
+				// because the same prefix can recur across pages.
+				if (listed.delimitedPrefixes) {
+					for (const delimited of listed.delimitedPrefixes) {
+						if (seenPrefixes.has(delimited)) continue;
+						seenPrefixes.add(delimited);
+						files.push({
+							path: delimited,
+							size: 0,
+							updated_at: new Date().toISOString(),
+						});
+					}
+				}
+
+				cursor = listed.truncated ? listed.cursor : undefined;
+			} while (cursor);
 
 			return files;
 		},

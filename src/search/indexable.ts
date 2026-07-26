@@ -81,6 +81,16 @@ export const INDEX_DENYLIST: readonly DenyRule[] = [
 		reason: "benchmark fixture",
 	},
 	{
+		// Working files, mirroring the `scratch/` convention in agent-hq. They
+		// are drafts by definition and routinely near-duplicate a finished
+		// document elsewhere: `scratch/agent-relay-onboarding-guide.md` is a
+		// stale 12939-byte draft of the 13529-byte copy under
+		// `memory/workload/`, and both were being returned for the same query,
+		// spending two of three result slots on one document.
+		pattern: /^scratch\//,
+		reason: "scratch working file",
+	},
+	{
 		// Embedding raw markup or binary bytes produces a vector that means
 		// nothing. An SVG of an architecture diagram scored 0.47 against
 		// "semantic search index health" purely on markup noise.
