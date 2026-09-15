@@ -39,7 +39,7 @@ describe("executeReflectionTool", () => {
 			});
 
 			const result = await executeReflectionTool(
-				{ name: "readFile", arguments: { path: "memory/learnings.md" } },
+				{ id: "call_test", name: "readFile", arguments: { path: "memory/learnings.md" } },
 				context,
 			);
 
@@ -49,7 +49,7 @@ describe("executeReflectionTool", () => {
 
 		it("should return error for non-existent file", async () => {
 			const result = await executeReflectionTool(
-				{ name: "readFile", arguments: { path: "memory/nonexistent.md" } },
+				{ id: "call_test", name: "readFile", arguments: { path: "memory/nonexistent.md" } },
 				context,
 			);
 
@@ -65,7 +65,7 @@ describe("executeReflectionTool", () => {
 			});
 
 			const result = await executeReflectionTool(
-				{ name: "readFile", arguments: { path: "memory/large.md" } },
+				{ id: "call_test", name: "readFile", arguments: { path: "memory/large.md" } },
 				context,
 			);
 
@@ -87,7 +87,7 @@ describe("executeReflectionTool", () => {
 			});
 
 			const result = await executeReflectionTool(
-				{ name: "listFiles", arguments: { path: "memory" } },
+				{ id: "call_test", name: "listFiles", arguments: { path: "memory" } },
 				context,
 			);
 
@@ -106,7 +106,7 @@ describe("executeReflectionTool", () => {
 			});
 
 			const result = await executeReflectionTool(
-				{ name: "listFiles", arguments: { path: "memory", recursive: true } },
+				{ id: "call_test", name: "listFiles", arguments: { path: "memory", recursive: true } },
 				context,
 			);
 
@@ -138,7 +138,7 @@ describe("executeReflectionTool", () => {
 			const ctx = contextWithBacklinks(["memory/projects/foo.md", "memory/projects/bar.md"]);
 
 			const result = await executeReflectionTool(
-				{ name: "getBacklinks", arguments: { target: "memory/learnings" } },
+				{ id: "call_test", name: "getBacklinks", arguments: { target: "memory/learnings" } },
 				ctx,
 			);
 
@@ -155,7 +155,7 @@ describe("executeReflectionTool", () => {
 			const ctx = contextWithBacklinks([]);
 
 			const result = await executeReflectionTool(
-				{ name: "getBacklinks", arguments: { target: "memory/orphan" } },
+				{ id: "call_test", name: "getBacklinks", arguments: { target: "memory/orphan" } },
 				ctx,
 			);
 
@@ -166,7 +166,7 @@ describe("executeReflectionTool", () => {
 
 		it("errors when target is empty", async () => {
 			const result = await executeReflectionTool(
-				{ name: "getBacklinks", arguments: { target: "" } },
+				{ id: "call_test", name: "getBacklinks", arguments: { target: "" } },
 				context,
 			);
 
@@ -178,7 +178,7 @@ describe("executeReflectionTool", () => {
 			const ctx = contextWithBacklinks([], false);
 
 			const result = await executeReflectionTool(
-				{ name: "getBacklinks", arguments: { target: "memory/learnings" } },
+				{ id: "call_test", name: "getBacklinks", arguments: { target: "memory/learnings" } },
 				ctx,
 			);
 
@@ -196,6 +196,7 @@ describe("executeReflectionTool", () => {
 
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "proposeEdit",
 					arguments: {
 						path: "memory/learnings.md",
@@ -215,6 +216,7 @@ describe("executeReflectionTool", () => {
 		it("should reject edit for non-existent file (except create)", async () => {
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "proposeEdit",
 					arguments: {
 						path: "memory/nonexistent.md",
@@ -233,6 +235,7 @@ describe("executeReflectionTool", () => {
 		it("should allow create for non-existent file", async () => {
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "proposeEdit",
 					arguments: {
 						path: "memory/new-file.md",
@@ -257,6 +260,7 @@ describe("executeReflectionTool", () => {
 
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "proposeEdit",
 					arguments: {
 						path: "memory/test.md",
@@ -281,6 +285,7 @@ describe("executeReflectionTool", () => {
 
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "autoApply",
 					arguments: {
 						path: "memory/learnings.md",
@@ -309,6 +314,7 @@ describe("executeReflectionTool", () => {
 
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "autoApply",
 					arguments: {
 						path: "memory/learnings.md",
@@ -332,6 +338,7 @@ describe("executeReflectionTool", () => {
 
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "autoApply",
 					arguments: {
 						path: "memory/learnings.md",
@@ -354,6 +361,7 @@ describe("executeReflectionTool", () => {
 
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "autoApply",
 					arguments: {
 						path: "memory/learnings.md",
@@ -375,6 +383,7 @@ describe("executeReflectionTool", () => {
 		it("should flag an issue for deep analysis", async () => {
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "flagForDeepAnalysis",
 					arguments: {
 						path: "memory/learnings.md",
@@ -394,6 +403,7 @@ describe("executeReflectionTool", () => {
 		it("should finish reflection with summary", async () => {
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "finishReflection",
 					arguments: {
 						summary: "Found 2 issues and proposed fixes",
@@ -414,6 +424,7 @@ describe("executeReflectionTool", () => {
 		it("should finish quick scan with counts", async () => {
 			const result = await executeReflectionTool(
 				{
+					id: "call_test",
 					name: "finishQuickScan",
 					arguments: {
 						autoApplied: 3,
@@ -431,7 +442,10 @@ describe("executeReflectionTool", () => {
 
 	describe("unknown tool", () => {
 		it("should return error for unknown tool", async () => {
-			const result = await executeReflectionTool({ name: "unknownTool", arguments: {} }, context);
+			const result = await executeReflectionTool(
+				{ id: "call_test", name: "unknownTool", arguments: {} },
+				context,
+			);
 
 			expect(result.success).toBe(false);
 			expect(result.error).toContain("Unknown tool");

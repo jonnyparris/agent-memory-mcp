@@ -69,6 +69,7 @@ describe("runAgenticReflection", () => {
 			response: "Quick scan complete",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "finishQuickScan",
 					arguments: { autoApplied: 0, flaggedForDeepAnalysis: 0 },
 				},
@@ -80,6 +81,7 @@ describe("runAgenticReflection", () => {
 			response: "Deep analysis complete",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "finishReflection",
 					arguments: {
 						summary: "Memory is in good shape",
@@ -98,45 +100,36 @@ describe("runAgenticReflection", () => {
 		expect(result.deepAnalysisIterations).toBeGreaterThan(0);
 	});
 
-	it("should handle multi-turn quick scan with auto-apply", async () => {
-		// First turn: list files
+	it("should preserve call metadata across a multi-turn quick scan", async () => {
+		// First turn has no prose: the old `if (result.response)` guard dropped
+		// this assistant turn entirely, including its tool call.
 		mockLLMComplete.mockResolvedValueOnce({
-			response: "Listing files",
+			response: "",
 			toolCalls: [
 				{
+					id: "call_list",
 					name: "listFiles",
 					arguments: { path: "memory", recursive: true },
 				},
 			],
 		});
 
-		// Second turn: read file
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Reading file",
-			toolCalls: [
-				{
-					name: "readFile",
-					arguments: { path: "memory/learnings.md" },
-				},
-			],
-		});
-
-		// Third turn: finish quick scan
 		mockLLMComplete.mockResolvedValueOnce({
 			response: "Done scanning",
 			toolCalls: [
 				{
+					id: "call_finish_quick",
 					name: "finishQuickScan",
 					arguments: { autoApplied: 0, flaggedForDeepAnalysis: 0 },
 				},
 			],
 		});
 
-		// Deep analysis
 		mockLLMComplete.mockResolvedValueOnce({
 			response: "Deep analysis",
 			toolCalls: [
 				{
+					id: "call_finish_deep",
 					name: "finishReflection",
 					arguments: {
 						summary: "Scanned files, no issues found",
@@ -150,7 +143,22 @@ describe("runAgenticReflection", () => {
 		const result = await runAgenticReflection(mockEnv, mockStorage);
 
 		expect(result.success).toBe(true);
-		expect(result.quickScanIterations).toBe(3);
+		expect(result.quickScanIterations).toBe(2);
+
+		const secondTurnMessages = mockLLMComplete.mock.calls[1][0];
+		expect(secondTurnMessages).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					role: "assistant",
+					content: "",
+					tool_calls: [expect.objectContaining({ id: "call_list", name: "listFiles" })],
+				}),
+				expect.objectContaining({
+					role: "tool",
+					tool_call_id: "call_list",
+				}),
+			]),
+		);
 	});
 
 	it("should pass flagged issues from quick scan to deep analysis", async () => {
@@ -159,6 +167,7 @@ describe("runAgenticReflection", () => {
 			response: "Found complex issue",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "flagForDeepAnalysis",
 					arguments: {
 						path: "memory/learnings.md",
@@ -172,6 +181,7 @@ describe("runAgenticReflection", () => {
 			response: "Done",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "finishQuickScan",
 					arguments: { autoApplied: 0, flaggedForDeepAnalysis: 1 },
 				},
@@ -183,6 +193,7 @@ describe("runAgenticReflection", () => {
 			response: "Analyzing flagged issue",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "proposeEdit",
 					arguments: {
 						path: "memory/learnings.md",
@@ -198,6 +209,7 @@ describe("runAgenticReflection", () => {
 			response: "Done",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "finishReflection",
 					arguments: {
 						summary: "Fixed outdated information",
@@ -221,6 +233,7 @@ describe("runAgenticReflection", () => {
 			response: "Still working",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "listFiles",
 					arguments: { path: "memory" },
 				},
@@ -295,6 +308,7 @@ describe("runDeepAnalysisOnly", () => {
 			response: "Deep analysis only",
 			toolCalls: [
 				{
+					id: "call_test",
 					name: "finishReflection",
 					arguments: {
 						summary: "Analysis complete",
@@ -338,6 +352,7 @@ describe("WorkersAIProvider tool calling", () => {
 				response: "",
 				tool_calls: [
 					{
+						id: "call_test",
 						name: "readFile",
 						arguments: JSON.stringify({ path: "memory/test.md" }),
 					},
@@ -375,6 +390,7 @@ describe("WorkersAIProvider tool calling", () => {
 				response: "",
 				tool_calls: [
 					{
+						id: "call_test",
 						name: "readFile",
 						arguments: { path: "memory/test.md" }, // Already an object
 					},
