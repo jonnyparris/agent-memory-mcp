@@ -1,0 +1,19 @@
+test/unit/embeddings.test.ts
+  s_42ffa03a9c3ccb::t_56e2514fa94a17 61,73,76,91-142,152,155,242-243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "aa7ba60f629bd9c49fc6808c8e187e4f03ed53b7",
+  "prompts": {},
+  "sessions": {
+    "s_42ffa03a9c3ccb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_065ec5be4ffeTSGTN9lq08YW2x",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ruskin Constant <6400000+jonnyparris@users.noreply.github.com>"
+    }
+  }
+}

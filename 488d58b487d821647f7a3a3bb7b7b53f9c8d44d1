@@ -1,0 +1,21 @@
+src/search/durable-object.ts
+  s_42ffa03a9c3ccb::t_6a21ca58bc92a8 3,10-18,201-209,212-258,260-269,271,280
+test/integration/prune.test.ts
+  s_42ffa03a9c3ccb::t_81f767e61ac0f7 104-170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "488d58b487d821647f7a3a3bb7b7b53f9c8d44d1",
+  "prompts": {},
+  "sessions": {
+    "s_42ffa03a9c3ccb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_065ec5be4ffeTSGTN9lq08YW2x",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ruskin Constant <6400000+jonnyparris@users.noreply.github.com>"
+    }
+  }
+}

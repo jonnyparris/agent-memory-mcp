@@ -1,0 +1,47 @@
+src/conversations.ts
+  s_9710c9d3efa325::t_879577e6bab180 184-200,202-208,213,218-219,231-232,239-246,262-272
+src/index.ts
+  s_42ffa03a9c3ccb::t_dab7f172f7a889 20,86,95-112
+src/search/client.ts
+  s_9710c9d3efa325::t_ad08504e8e29aa 21-40
+src/search/durable-object.ts
+  s_42ffa03a9c3ccb::t_5b7739b4241ace 4,10-24,42,233-301,366-369
+src/search/index-write.ts
+  s_42ffa03a9c3ccb::t_7010a3902cb8e5 7,22-28,127-150
+src/server.ts
+  s_42ffa03a9c3ccb::t_29c90126a38546 4-5,19,182-187,198,285,407-412,414-420,422-432,556,559-563,565-568,571-575,604,606,609-620,663-671,673-685,687-697,703-705
+test/e2e/deployed.test.ts
+  s_42ffa03a9c3ccb::t_4a34e285840607 120-130,132-135
+test/integration/prune.test.ts
+  s_42ffa03a9c3ccb::t_5bd999bb45d61d 1-181
+test/integration/tools.test.ts
+  s_42ffa03a9c3ccb::t_b0a713fc458d7d 98,377-382,385-386,388-390,393-396,399-404,407-409
+test/test-types.d.ts
+  s_9710c9d3efa325::t_3d8c4b49809643 17-36
+test/unit/conversations.test.ts
+  s_9710c9d3efa325::t_c4c25405874b90 318-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "491bdceda15641844df91e04c79009683d05e4c4",
+  "prompts": {},
+  "sessions": {
+    "s_42ffa03a9c3ccb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_065ec5be4ffeTSGTN9lq08YW2x",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ruskin Constant <6400000+jonnyparris@users.noreply.github.com>"
+    },
+    "s_9710c9d3efa325": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_064201c71ffeNYFHKxeME48V5X",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ruskin Constant <6400000+jonnyparris@users.noreply.github.com>"
+    }
+  }
+}
