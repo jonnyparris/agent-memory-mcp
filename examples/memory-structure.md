@@ -153,7 +153,7 @@ Track corrections and mistakes to avoid repeating them:
 ### Cloudflare Workers
 - Durable Objects have 128MB memory limit
 - SQLite in DO is persisted to disk, survives restarts
-- R2 versioning must be enabled before it tracks versions
+- R2 has no object versioning; history is snapshotted on write instead
 ```
 
 ### preferences.md
@@ -225,7 +225,7 @@ MCP server for AI agent memory with semantic search.
 **Status**: Alpha - core features working
 **Goals**: 
 - Semantic search across memory files
-- File versioning via R2
+- File version history (snapshot-on-write, since R2 has no object versioning)
 - Codemode for complex queries
 
 **Key Decisions**:

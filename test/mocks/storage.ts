@@ -3,8 +3,9 @@
  * In-memory storage that implements the R2Storage interface
  */
 
-import type { R2Storage } from "../../src/storage/r2";
-import type { MemoryFile, MemoryFileMetadata } from "../../src/types";
+import { HISTORY_PREFIX } from "../../src/storage/r2";
+import type { R2Storage, WriteOptions, WriteResult } from "../../src/storage/r2";
+import type { FileVersion, MemoryFile, MemoryFileMetadata } from "../../src/types";
 
 interface StoredFile {
 	content: string;
@@ -33,10 +34,17 @@ export function createMockStorage(): R2Storage & {
 	_clear: () => void;
 } {
 	const files = new Map<string, StoredFile>();
+	// Keyed `path\u0000versionId` — NUL cannot occur in a path, so one flat
+	// map stands in for the `_history/<path>/<id>.snap` layout.
+	const history = new Map<string, StoredFile>();
+	let counter = 0;
 
 	return {
 		_files: files,
-		_clear: () => files.clear(),
+		_clear: () => {
+			files.clear();
+			history.clear();
+		},
 
 		async read(path: string): Promise<MemoryFile | null> {
 			const file = files.get(path);
@@ -49,12 +57,25 @@ export function createMockStorage(): R2Storage & {
 			};
 		},
 
-		async write(path: string, content: string): Promise<{ version_id?: string }> {
+		async write(path: string, content: string, options: WriteOptions = {}): Promise<WriteResult> {
+			// Real history, not a stub. A mock that quietly skipped snapshots
+			// would let every unit test exercising `indexWrite` pass while the
+			// feature did nothing — the failure mode this whole change exists
+			// to prevent.
+			let previousVersionId: string | undefined;
+			const existing = files.get(path);
+			if (options.history && existing && !path.startsWith(HISTORY_PREFIX)) {
+				previousVersionId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${counter++}`;
+				history.set(`${path}\u0000${previousVersionId}`, {
+					content: existing.content,
+					updated_at: new Date().toISOString(),
+				});
+			}
 			files.set(path, {
 				content,
 				updated_at: new Date().toISOString(),
 			});
-			return { version_id: `v-${Date.now()}` };
+			return { version_id: `v-${Date.now()}`, previous_version_id: previousVersionId };
 		},
 
 		async list(prefix = "", recursive = false): Promise<MemoryFileMetadata[]> {
@@ -107,12 +128,21 @@ export function createMockStorage(): R2Storage & {
 			files.delete(path);
 		},
 
-		async getVersions(): Promise<[]> {
-			return [];
+		async getVersions(path: string, limit = 10): Promise<FileVersion[]> {
+			const prefix = `${path}\u0000`;
+			return [...history.entries()]
+				.filter(([key]) => key.startsWith(prefix))
+				.map(([key, file]) => ({
+					version_id: key.slice(prefix.length),
+					timestamp: file.updated_at,
+					size: file.content.length,
+				}))
+				.sort((a, b) => (a.version_id < b.version_id ? 1 : -1))
+				.slice(0, limit);
 		},
 
-		async getVersion(): Promise<null> {
-			return null;
+		async getVersion(path: string, versionId: string): Promise<string | null> {
+			return history.get(`${path}\u0000${versionId}`)?.content ?? null;
 		},
 	};
 }

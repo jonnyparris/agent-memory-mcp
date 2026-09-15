@@ -23,6 +23,11 @@ describe("index denylist", () => {
 			["memory/workload/plans/2026-01-31-nightly-reflection.md", "nightly reflection journal"],
 			["memory/workload/plans/2026-02-01-evening-reflection.md", "nightly reflection journal"],
 			["memory/_bench/many1.md", "benchmark fixture"],
+			[
+				"_history/memory/learnings.md/2026-09-15T12-00-00-000Z-abc123.snap",
+				"version history snapshot",
+			],
+			["_history/memory/projects.md/x.snap", "version history snapshot"],
 			["scratch/agent-relay-onboarding-guide.md", "scratch working file"],
 			["scratch/nested/draft.md", "scratch working file"],
 			["plans/signal-agent-architecture.svg", "non-prose file type"],

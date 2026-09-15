@@ -19,7 +19,7 @@ import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { getConversationIndex, getMemoryIndex } from "./search/client";
 import { EmptyContentError, indexWrite } from "./search/index-write";
-import { createR2Storage } from "./storage/r2";
+import { HISTORY_RETENTION, createR2Storage } from "./storage/r2";
 import { extractSnippet, truncateWithMeta } from "./truncate";
 import type { Env } from "./types";
 
@@ -178,6 +178,12 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				tags: result.tags,
 				links: result.links,
 			};
+			// The undo handle for the content this call just destroyed.
+			// Returning it inline means a caller that realises its mistake
+			// one line later can roll back without first calling `history`.
+			if (result.previous_version_id) {
+				response.previous_version_id = result.previous_version_id;
+			}
 			if (result.embedding_error) response.embedding_error = result.embedding_error;
 			if (result.index_deferred) response.index_deferred = true;
 			if (result.index_skipped) {
@@ -200,6 +206,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			}
 
 			const parts = [`Wrote ${path} (${content.length} bytes)`];
+			if (result.previous_version_id) parts.push("previous version kept");
 			if (result.tags.length > 0) parts.push(`tags: ${result.tags.join(", ")}`);
 			if (result.index_deferred) parts.push("index update deferred");
 			if (result.index_skipped) parts.push(`not indexed (${result.index_skipped})`);
@@ -293,6 +300,9 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 							tags: result.tags,
 							links: result.links,
 							bytes: file.content.length,
+							...(result.previous_version_id
+								? { previous_version_id: result.previous_version_id }
+								: {}),
 							...(result.embedding_error ? { embedding_error: result.embedding_error } : {}),
 							...(result.index_deferred ? { index_deferred: true } : {}),
 							...(result.index_skipped ? { index_skipped: result.index_skipped } : {}),
@@ -533,8 +543,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		server,
 		"history",
 		{
-			description:
-				"List previous versions of a file. Requires R2 bucket versioning — returns an empty list (with a hint) if versioning is disabled on the MEMORY_BUCKET.",
+			description: `List previous versions of a file, newest first. Versions are snapshots taken automatically before each \`write\`/\`write_many\` overwrite — R2 itself has no object versioning. Only writes made after this feature shipped have history, and the last ${HISTORY_RETENTION} versions per file are kept.`,
 			inputSchema: {
 				path: z.string().describe("File path"),
 				limit: z.number().optional().default(10).describe("Max versions to return"),
@@ -545,14 +554,10 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			if (versions.length === 0) {
 				return {
 					versions: [],
-					versioning_enabled: false,
-					hint:
-						"No versions returned. This usually means R2 bucket versioning is " +
-						"disabled. Enable it with `wrangler r2 bucket update agent-memory " +
-						"--versioning enabled` to capture history going forward.",
+					hint: `No snapshots for ${path}. Either it has not been overwritten since version history shipped, or it has never existed. History starts at the first overwrite, so the current content is never itself a version.`,
 				};
 			}
-			return { versions, versioning_enabled: true };
+			return { versions };
 		},
 	);
 
@@ -561,7 +566,8 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"rollback",
 		{
 			description:
-				"Restore a file to a previous version. Requires R2 bucket versioning to be enabled.",
+				"Restore a file to a previous version from `history`. The content being " +
+				"replaced is itself snapshotted first, so a rollback can be rolled back.",
 			inputSchema: {
 				path: z.string().describe("File path"),
 				version_id: z.string().describe("Version ID to restore"),
@@ -572,8 +578,18 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			if (!fileContent) {
 				return errResult("Version not found", { path, version_id });
 			}
-			await storage.write(path, fileContent);
-			return { success: true, restored_from: version_id };
+			// Through `indexWrite`, not `storage.write`. A bare write left the
+			// embedding pointing at the content we just discarded, so `search`
+			// kept returning the rolled-back text — and took no snapshot, so
+			// the restore was itself irreversible.
+			const result = await indexWrite(env, storage, path, fileContent, {
+				allowEmpty: true,
+			});
+			return {
+				success: true,
+				restored_from: version_id,
+				previous_version_id: result.previous_version_id,
+			};
 		},
 	);
 

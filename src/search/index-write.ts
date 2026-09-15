@@ -37,6 +37,12 @@ export interface IndexWriteResult {
 	 * silent skip is indistinguishable from a bug at the call site.
 	 */
 	index_skipped?: string;
+	/**
+	 * Version id under which the content this write *replaced* was saved.
+	 * Absent on a first write (nothing was superseded). Pass it to
+	 * `rollback` to undo this write.
+	 */
+	previous_version_id?: string;
 }
 
 export interface IndexWriteOptions {
@@ -66,11 +72,15 @@ export interface IndexWriteOptions {
 	waitForIndex?: boolean;
 	/**
 	 * Opt in to writing empty content. Refused by default: an
-	 * empty-string write silently destroys whatever was at `path` with
-	 * no in-bucket recovery when versioning is off, and the embedding
+	 * empty-string write is almost always a caller bug, and the embedding
 	 * pipeline produces no tags/links/overlap warnings to flag the
 	 * mistake. Callers who genuinely want to truncate a file must set
 	 * this to `true`.
+	 *
+	 * Snapshots (see `HISTORY_PREFIX`) now make such a write recoverable,
+	 * which is why this is still only a guard and not a hard block — but
+	 * recovery you never discover you need is no better than none, so the
+	 * refusal stays.
 	 *
 	 * See https://github.com/jonnyparris/agent-memory-mcp/issues/8.
 	 */
@@ -116,21 +126,27 @@ export async function indexWrite(
 ): Promise<IndexWriteResult> {
 	// Refuse empty writes by default. Empty-string overwrites are
 	// almost always a caller bug (a templating step that produced no
-	// content, a partial response, a swallowed exception) and they are
-	// destructive: when R2 versioning is off the previous content is
-	// unrecoverable from the bucket. Callers who genuinely want to
-	// truncate a file opt in with `allowEmpty`.
+	// content, a partial response, a swallowed exception). They are now
+	// recoverable from `_history/`, but a caller who did not mean to
+	// truncate will not think to look, so keep failing loudly. Callers
+	// who genuinely want to truncate a file opt in with `allowEmpty`.
 	if (content.length === 0 && !options.allowEmpty) {
 		throw new EmptyContentError(path);
 	}
 
-	const result = await storage.write(path, content);
+	// Snapshot the superseded content. This is the one write path a human
+	// or an agent drives directly, which is exactly where a careless
+	// full-file overwrite happens; the machine-written indexes
+	// (`reminders/index.json`, `conversations/index.json`) call
+	// `storage.write` without this and stay history-free.
+	const result = await storage.write(path, content, { history: true });
 	const tags = parseTags(content);
 	const links = parseWikilinks(content);
 
 	const response: IndexWriteResult = {
 		success: true,
 		version_id: result.version_id,
+		previous_version_id: result.previous_version_id,
 		tags,
 		links,
 	};

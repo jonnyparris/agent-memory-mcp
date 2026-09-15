@@ -34,6 +34,16 @@ export interface DenyRule {
  */
 export const INDEX_DENYLIST: readonly DenyRule[] = [
 	{
+		// Superseded copies kept by `storage.write({ history: true })`. These
+		// are excluded from `list` as well, so in practice they never reach
+		// the indexer — this rule is the backstop for a manual write to a
+		// history path, and for any future reindex sweep that walks raw keys.
+		// An old revision of learnings.md competing with learnings.md for
+		// recall is the exact failure this denylist exists to prevent.
+		pattern: /^_history\//,
+		reason: "version history snapshot",
+	},
+	{
 		// 232 files as of 2026-07. Each is a point-in-time snapshot that the
 		// next day's reflection supersedes; the live view lives in
 		// memory/reflections/ and the workload files it feeds.
