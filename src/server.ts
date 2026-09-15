@@ -20,7 +20,7 @@ import { checkReminders, listReminders, removeReminder, scheduleReminder } from 
 import { getConversationIndex, getMemoryIndex } from "./search/client";
 import { EmptyContentError, indexWrite } from "./search/index-write";
 import { HISTORY_RETENTION, createR2Storage } from "./storage/r2";
-import { extractSnippet, truncateWithMeta } from "./truncate";
+import { MAX_READ_LENGTH, extractSnippet, readWindow } from "./truncate";
 import type { Env } from "./types";
 
 /**
@@ -47,14 +47,39 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		server,
 		"read",
 		{
-			description: "Read one file or up to 50 files from memory storage.",
+			description: `Read one file or up to 50 files from memory storage.\n\nA single read returns at most ${MAX_READ_LENGTH} characters. When a file is longer, the response sets \`truncated: true\` and \`next_offset\` — pass that back as \`offset\` to read the next window, and repeat until \`next_offset\` is absent. **Check \`truncated\` before treating a read as the whole file**; appending to a truncated read and writing it back destroys the remainder.`,
 			inputSchema: {
 				path: z
 					.union([z.string(), z.array(z.string())])
 					.describe("File path or array of paths, e.g., 'memory/learnings.md'"),
+				offset: z
+					.number()
+					.optional()
+					.describe(
+						"Character offset to start reading from. Use the `next_offset` from a previous truncated read to continue. Clamped to the file length.",
+					),
+				limit: z
+					.number()
+					.optional()
+					.describe(
+						`Max characters to return, capped at ${MAX_READ_LENGTH}. Applies to every path when reading several.`,
+					),
 			},
 		},
-		async ({ path }: { path: string | string[] }) => {
+		async ({
+			path,
+			offset,
+			limit,
+		}: {
+			path: string | string[];
+			offset?: number;
+			limit?: number;
+		}) => {
+			// Passing either argument marks the caller as paging deliberately,
+			// which suppresses the in-band marker so chunks reassemble cleanly.
+			const paging = offset !== undefined || limit !== undefined;
+			const windowOptions = { offset, limit, marker: !paging };
+
 			if (Array.isArray(path)) {
 				if (path.length > 50) {
 					return errResult("Cannot read more than 50 paths in a single call");
@@ -63,43 +88,67 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					path.map(async (p) => {
 						const file = await storage.read(p);
 						if (!file) return [p, { error: "File not found" }] as const;
-						const t = truncateWithMeta(file.content);
+						const w = readWindow(file.content, windowOptions);
 						const entry: Record<string, unknown> = {
-							content: t.content,
+							content: w.content,
 							updated_at: file.updated_at,
 							size: file.size,
 						};
-						if (t.truncated) {
+						if (w.truncated) {
 							entry.truncated = true;
-							entry.original_size = t.original_size;
+							entry.original_size = w.total_length;
+							entry.next_offset = w.next_offset;
+						}
+						if (paging) {
+							entry.offset = w.offset;
+							entry.returned = w.returned;
+							entry.total_length = w.total_length;
 						}
 						return [p, entry] as const;
 					}),
 				);
 				const found = files.filter(([, v]) => !("error" in v)).length;
-				return okResult({ files: Object.fromEntries(files) }, `Read ${found}/${path.length} files`);
+				const cut = files.filter(([, v]) => "truncated" in v).length;
+				const summary =
+					cut > 0
+						? `Read ${found}/${path.length} files · ${cut} truncated, pass next_offset to continue`
+						: `Read ${found}/${path.length} files`;
+				return okResult({ files: Object.fromEntries(files) }, summary);
 			}
 
 			const file = await storage.read(path);
 			if (!file) {
 				return errResult("File not found", { path });
 			}
-			const t = truncateWithMeta(file.content);
+			const w = readWindow(file.content, windowOptions);
 			// Only surface truncation metadata when truncation actually
 			// happened — keeps the common-case response shape stable for
 			// clients that assert on exact keys.
 			const body: Record<string, unknown> = {
-				content: t.content,
+				content: w.content,
 				updated_at: file.updated_at,
 				size: file.size,
 			};
-			if (t.truncated) {
+			if (w.truncated) {
 				body.truncated = true;
-				body.original_size = t.original_size;
+				// `original_size` predates paging and is characters, not bytes,
+				// despite the name. Kept for callers that already read it;
+				// `total_length` is the honestly-named one.
+				body.original_size = w.total_length;
+				body.next_offset = w.next_offset;
 			}
-			const prefix = t.truncated
-				? `Read ${path} (${t.original_size} bytes, truncated to ${t.content.length})`
-				: `Read ${path} (${file.size} bytes)`;
+			if (paging) {
+				body.offset = w.offset;
+				body.returned = w.returned;
+				body.total_length = w.total_length;
+			}
+
+			const span = paging
+				? `chars ${w.offset}-${w.offset + w.returned} of ${w.total_length}`
+				: `${file.size} bytes`;
+			const prefix = w.truncated
+				? `Read ${path} (${span}) · truncated, pass offset=${w.next_offset} to continue`
+				: `Read ${path} (${span})`;
 			return okResult(body, prefix);
 		},
 	);
