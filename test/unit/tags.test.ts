@@ -92,3 +92,43 @@ describe("parseTags", () => {
 		expect(parseTags(content)).toEqual(["alpha"]);
 	});
 });
+
+/**
+ * The bare comma-separated scalar is the style every file in our own memory
+ * corpus uses (`tags: brapi, projects`). It used to land in the single-scalar
+ * branch and be stored verbatim, so `list_tags` reported one 14-element
+ * mega-tag and `search({ tags: ["core"] })` matched nothing.
+ */
+describe("parseTags - comma-separated scalar", () => {
+	it("splits a bare comma-separated list", () => {
+		expect(parseTags("---\ntags: brapi, projects\n---\n\nbody")).toEqual(["brapi", "projects"]);
+	});
+
+	it("splits the long real-world conversations header", () => {
+		const content =
+			"---\ntags: conversations, core, cdnjs, brapi, zaraz, clopy, workers-cache, cachew, clickhouse, grafana, prometheus, jira, gitlab, mcp\n---\n\nbody";
+		const tags = parseTags(content);
+
+		expect(tags).toHaveLength(14);
+		expect(tags).toContain("core");
+		expect(tags).toContain("conversations");
+		expect(tags).toContain("mcp");
+		// The whole thing must no longer survive as one tag.
+		expect(tags.some((t) => t.includes(","))).toBe(false);
+	});
+
+	it("still treats a genuine single tag as one tag", () => {
+		expect(parseTags("---\ntags: core-values\n---\n\nbody")).toEqual(["core-values"]);
+	});
+
+	it("trims whitespace and drops empty entries from a trailing comma", () => {
+		expect(parseTags("---\ntags: one ,  two ,\n---\n\nbody")).toEqual(["one", "two"]);
+	});
+
+	it("lowercases and deduplicates across the split", () => {
+		expect(parseTags("---\ntags: CDNJS, cdnjs, Projects\n---\n\nbody")).toEqual([
+			"cdnjs",
+			"projects",
+		]);
+	});
+});

@@ -15,6 +15,12 @@
  *     - two
  *   ---
  *
+ * plus the bare comma-separated scalar our own memory files actually use:
+ *
+ *   ---
+ *   tags: one, two, three
+ *   ---
+ *
  * We deliberately do not pull in a full YAML parser here — memory files
  * are plain markdown with a simple tags field, and a handful of lines of
  * regex keep the Worker bundle lean. If frontmatter becomes richer later,
@@ -87,8 +93,20 @@ export function parseTags(content: string): string[] {
 				continue;
 			}
 
-			// Single scalar: tags: foo (treat as one tag)
-			rawTags.push(value);
+			// Bare scalar. Split on commas, because `tags: one, two, three` is the
+			// style every file in our own corpus uses and treating it as a single
+			// tag silently destroys tag filtering: `list_tags` reported one
+			// 14-element mega-tag reading "conversations, core, cdnjs, brapi, …"
+			// and `search({ tags: ["core"] })` matched nothing at all, because no
+			// tag named `core` existed to match.
+			//
+			// A tag containing a comma is not a thing worth supporting; a
+			// comma-separated list read as one tag is an outright bug. `split`
+			// with no comma present yields the single-element case unchanged, so
+			// genuine one-tag files are unaffected.
+			for (const part of value.split(",")) {
+				rawTags.push(part);
+			}
 			break;
 		}
 
