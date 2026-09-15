@@ -1,0 +1,25 @@
+src/server.ts
+  s_283b34906d5201::t_7cbdd4f54c698d 22,49,54-65,68-81,90,92,96,98-104,110-115,122,127,131,133-137,139-150
+src/truncate.ts
+  s_283b34906d5201::t_634bcd97239783 1-10,61-139
+test/integration/read-multi.test.ts
+  s_283b34906d5201::t_ed865be7ada041 169-276
+test/unit/truncate.test.ts
+  s_283b34906d5201::t_60fe1a805f7ffa 2-9,140-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4cdb047059251da4a9863fd53b4c6ed5412d568",
+  "prompts": {},
+  "sessions": {
+    "s_283b34906d5201": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f5b33ccc5ffeuLvUi10CDalle6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ruskin Constant <6400000+jonnyparris@users.noreply.github.com>"
+    }
+  }
+}
