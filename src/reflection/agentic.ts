@@ -89,6 +89,8 @@ export interface AgenticReflectionResult {
 	quickScanIterations: number;
 	deepAnalysisIterations: number;
 	flaggedIssues: FlaggedIssue[];
+	/** Storage writes that landed but failed to update the search index. */
+	writeFailures: string[];
 	error?: string;
 }
 
@@ -112,6 +114,7 @@ export async function runAgenticReflection(
 			quickScanIterations: quickScanResult.iterations,
 			deepAnalysisIterations: 0,
 			flaggedIssues: context.flaggedIssues,
+			writeFailures: context.writeFailures,
 			error: quickScanResult.error,
 		};
 	}
@@ -127,6 +130,7 @@ export async function runAgenticReflection(
 		quickScanIterations: quickScanResult.iterations,
 		deepAnalysisIterations: deepAnalysisResult.iterations,
 		flaggedIssues: context.flaggedIssues,
+		writeFailures: context.writeFailures,
 	};
 }
 
@@ -349,6 +353,7 @@ export async function runDeepAnalysisOnly(
 		quickScanIterations: 0,
 		deepAnalysisIterations: result.iterations,
 		flaggedIssues: context.flaggedIssues,
+		writeFailures: context.writeFailures,
 		error: result.error,
 	};
 }

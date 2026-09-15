@@ -7,8 +7,26 @@
 
 import type { LLMToolCall } from "../llm/types";
 import { getMemoryIndex } from "../search/client";
+import { indexWrite } from "../search/index-write";
 import type { R2Storage } from "../storage/r2";
 import type { Env } from "../types";
+
+/**
+ * Largest deletion an auto-applied "quick fix" may make, in characters.
+ *
+ * The quick-fix types are all nominally cosmetic — typo, whitespace, newline,
+ * duplicate, formatting — but the mechanism is
+ * `content.replace(oldText, newText ?? "")` with `oldText` chosen freely by
+ * the model, so nothing structural stops a "duplicate" fix from deleting an
+ * entire section. These writes happen unattended on the 06:00 cron, and R2
+ * versioning is off, so there is no undo.
+ *
+ * 400 characters comfortably covers a stray tag line, a repeated heading or a
+ * duplicated sentence, and stops well short of a paragraph. Anything larger
+ * is a judgement call and belongs in `proposedEdits` for review, which is
+ * what the deep-analysis phase is for.
+ */
+const MAX_AUTO_FIX_DELETION = 400;
 
 /**
  * A proposed edit that requires human review
@@ -48,6 +66,8 @@ export interface ToolExecutionContext {
 	proposedEdits: ProposedEdit[];
 	autoAppliedFixes: AutoAppliedFix[];
 	flaggedIssues: FlaggedIssue[];
+	/** Writes whose storage step succeeded but index update failed. */
+	writeFailures: string[];
 }
 
 /**
@@ -246,10 +266,28 @@ async function executePropose(
 	args: ProposedEdit,
 	context: ToolExecutionContext,
 ): Promise<ToolResult> {
+	// A whole-file deletion is a content decision, not an edit to apply from an
+	// unattended reflection run. Surface it for a human without staging it for
+	// the auto-apply phase. The apply phase refuses it independently as
+	// defense-in-depth for persisted or externally-constructed proposals.
+	if (args.action === "delete") {
+		context.flaggedIssues.push({
+			path: args.path,
+			issue: `Reflection proposed deleting this file: ${args.reason}`,
+		});
+		return {
+			success: true,
+			result: {
+				message: `Delete refused and flagged for human review: ${args.path}`,
+				totalProposed: context.proposedEdits.length,
+			},
+		};
+	}
+
 	// Validate the edit
 	if (args.action !== "create") {
 		const exists = await context.storage.read(args.path);
-		if (!exists && args.action !== "delete") {
+		if (!exists) {
 			return { success: false, error: `File not found: ${args.path}` };
 		}
 	}
@@ -340,12 +378,43 @@ async function executeAutoApply(
 			break;
 	}
 
-	// Only write if content changed
-	if (newContent !== file.content) {
-		await context.storage.write(args.path, newContent);
+	// Refuse a deletion large enough to be a content decision rather than a
+	// cosmetic tidy. Measured on net shrinkage, so a replacement that swaps
+	// text of similar length is unaffected.
+	const removed = file.content.length - newContent.length;
+	if (removed > MAX_AUTO_FIX_DELETION) {
+		return {
+			success: false,
+			error: `Refusing to auto-apply a ${args.fixType} fix that removes ${removed} characters from ${args.path} (limit ${MAX_AUTO_FIX_DELETION}). Deletions this large are content decisions, not cosmetic fixes — use proposeEdit so a human reviews it.`,
+		};
 	}
 
-	// Record the fix
+	// Only write if content changed
+	if (newContent !== file.content) {
+		// Must go through indexWrite, not storage.write.
+		//
+		// A raw R2 write leaves search metadata describing the previous
+		// content. Any retrieval data derived from the file is then stale.
+		//
+		// indexWrite also brings the empty-content guard, which a direct write
+		// bypasses entirely — a `duplicate` fix whose oldText happened to match
+		// the whole file would have truncated it to zero bytes, unrecoverably.
+		const result = await indexWrite(context.env, context.storage, args.path, newContent, {
+			detectOverlaps: false,
+		});
+		if (result.embedding_error) {
+			const error =
+				`Partial write failure for ${args.path}: content was saved, but the search index ` +
+				`update failed (${result.embedding_error}). Reindex this file before relying on search.`;
+			context.flaggedIssues.push({ path: args.path, issue: error });
+			context.writeFailures.push(error);
+			console.error(error);
+			return { success: false, error };
+		}
+	}
+
+	// Record only a fully successful fix. On an index failure the R2 write has
+	// landed, but reporting the operation as applied would hide stale search.
 	context.autoAppliedFixes.push({
 		path: args.path,
 		fixType: args.fixType,
@@ -394,5 +463,6 @@ export function createExecutionContext(storage: R2Storage, env: Env): ToolExecut
 		proposedEdits: [],
 		autoAppliedFixes: [],
 		flaggedIssues: [],
+		writeFailures: [],
 	};
 }

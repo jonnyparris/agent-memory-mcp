@@ -17,6 +17,7 @@ import {
 	buildReflectionCard,
 	sendChatNotification,
 } from "../notification";
+import { type IndexWriteResult, indexWrite } from "../search/index-write";
 import type { R2Storage } from "../storage/r2";
 import { createR2Storage } from "../storage/r2";
 import type { Env, MemoryFileMetadata } from "../types";
@@ -149,6 +150,15 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 	}
 }
 
+function requireIndexedWrite(path: string, result: IndexWriteResult): void {
+	if (!result.embedding_error) return;
+
+	throw new Error(
+		`Partial write failure for ${path}: content was saved, but the search index update failed ` +
+			`(${result.embedding_error}). Reindex this file before relying on search.`,
+	);
+}
+
 /**
  * Run agentic reflection with tool calling
  */
@@ -163,9 +173,19 @@ async function runAgenticReflectionFlow(
 		agenticResult.proposedEdits.length > 0 || agenticResult.autoAppliedFixes.length > 0;
 	const hasFlagged = agenticResult.flaggedIssues.length > 0;
 
-	// Auto-apply all proposed edits directly (no staging for review)
+	// Auto-apply proposed edits, except whole-file deletions.
+	//
+	// Two things were wrong here. First, every branch wrote through
+	// `storage.write`, which leaves the search index describing the previous
+	// content — with per-section vectors the stored chunk offsets then point at
+	// the wrong bytes and every snippet after the edit is shifted. Second,
+	// `delete` removed an entire memory file unattended on the 06:00 cron, with
+	// R2 versioning off and therefore no undo, on nothing but a model's
+	// judgement. Deleting a whole file is never a cosmetic call, so it is now
+	// recorded for review instead of executed.
 	const appliedEdits: ReflectionChange[] = [];
-	const failedEdits: string[] = [];
+	const failedEdits: string[] = [...agenticResult.writeFailures];
+	const refusedEdits: ReflectionChange[] = [];
 
 	for (const edit of agenticResult.proposedEdits) {
 		try {
@@ -173,32 +193,51 @@ async function runAgenticReflectionFlow(
 				case "replace":
 				case "create":
 					if (edit.content) {
-						await storage.write(edit.path, edit.content);
+						const result = await indexWrite(env, storage, edit.path, edit.content, {
+							detectOverlaps: false,
+						});
+						requireIndexedWrite(edit.path, result);
 					}
 					break;
 				case "append":
 					if (edit.content) {
 						const existing = await storage.read(edit.path);
 						const newContent = existing ? `${existing.content}\n${edit.content}` : edit.content;
-						await storage.write(edit.path, newContent);
+						const result = await indexWrite(env, storage, edit.path, newContent, {
+							detectOverlaps: false,
+						});
+						requireIndexedWrite(edit.path, result);
 					}
 					break;
 				case "delete":
-					await storage.delete(edit.path);
-					break;
+					refusedEdits.push({
+						path: edit.path,
+						action: edit.action,
+						reason: `REFUSED (needs human review): ${edit.reason}`,
+					});
+					console.log(
+						JSON.stringify({
+							event: "auto_apply_edit_refused",
+							path: edit.path,
+							action: edit.action,
+							reason: edit.reason,
+						}),
+					);
+					continue;
 			}
 			appliedEdits.push({ path: edit.path, action: edit.action, reason: edit.reason });
 			console.log(
 				JSON.stringify({ event: "auto_applied_edit", path: edit.path, action: edit.action }),
 			);
 		} catch (e) {
-			failedEdits.push(`${edit.action}: ${edit.path}`);
+			const error = e instanceof Error ? e.message : String(e);
+			failedEdits.push(`${edit.action}: ${edit.path} — ${error}`);
 			console.error(
 				JSON.stringify({
 					event: "auto_apply_edit_failed",
 					path: edit.path,
 					action: edit.action,
-					error: e instanceof Error ? e.message : String(e),
+					error,
 				}),
 			);
 		}
@@ -210,7 +249,16 @@ async function runAgenticReflectionFlow(
 		summary: agenticResult.summary || "No summary provided.",
 		proposedEdits: agenticResult.proposedEdits,
 		autoAppliedFixes: agenticResult.autoAppliedFixes,
-		flaggedIssues: agenticResult.flaggedIssues,
+		// A refused deletion is surfaced as a flagged issue so it lands in the
+		// archived record and the caller's response instead of vanishing. The
+		// whole point of refusing is that a human decides.
+		flaggedIssues: [
+			...agenticResult.flaggedIssues,
+			...refusedEdits.map((e) => ({
+				path: e.path,
+				issue: `Reflection proposed deleting this file and was refused: ${e.reason}`,
+			})),
+		],
 		quickScanIterations: agenticResult.quickScanIterations,
 		deepAnalysisIterations: agenticResult.deepAnalysisIterations,
 	};
@@ -225,6 +273,7 @@ async function runAgenticReflectionFlow(
 			autoApplied: agenticResult.autoAppliedFixes.length,
 			edits: appliedEdits.length,
 			failedEdits: failedEdits.length,
+			refusedEdits: refusedEdits.length,
 		}),
 	);
 
@@ -276,7 +325,9 @@ async function runAgenticReflectionFlow(
 	}
 
 	return {
-		success: agenticResult.success,
+		// A storage write with a failed index update is not a successful
+		// reflection: the content changed, but search is known to be stale.
+		success: agenticResult.success && failedEdits.length === 0,
 		date,
 		summary,
 		mode: "agentic",
@@ -285,7 +336,13 @@ async function runAgenticReflectionFlow(
 		quickFixes,
 		edits: appliedEdits,
 		failedEdits: failedEdits.length > 0 ? failedEdits : undefined,
-		flaggedIssues: agenticResult.flaggedIssues.map((f) => ({ path: f.path, issue: f.issue })),
+		flaggedIssues: [
+			...agenticResult.flaggedIssues.map((f) => ({ path: f.path, issue: f.issue })),
+			...refusedEdits.map((e) => ({
+				path: e.path,
+				issue: `Reflection proposed deleting this file and was refused: ${e.reason}`,
+			})),
+		],
 		error: agenticResult.error,
 	};
 }

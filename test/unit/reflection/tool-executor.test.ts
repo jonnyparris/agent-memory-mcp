@@ -24,6 +24,7 @@ describe("executeReflectionTool", () => {
 						{ id: "memory/learnings.md", score: 0.9 },
 						{ id: "memory/projects.md", score: 0.8 },
 					]),
+					update: vi.fn().mockResolvedValue({ success: true }),
 				}),
 			} as any,
 			AI: {} as any,
@@ -230,6 +231,34 @@ describe("executeReflectionTool", () => {
 
 			expect(result.success).toBe(false);
 			expect(result.error).toContain("not found");
+		});
+
+		it("should refuse delete and flag it for human review", async () => {
+			mockStorage._files.set("memory/important.md", {
+				content: "important content",
+				updated_at: "2026-02-04T10:00:00Z",
+			});
+
+			const result = await executeReflectionTool(
+				{
+					id: "call_delete",
+					name: "proposeEdit",
+					arguments: {
+						path: "memory/important.md",
+						action: "delete",
+						reason: "model considers it redundant",
+					},
+				},
+				context,
+			);
+
+			expect(result.success).toBe(true);
+			expect((result.result as { message: string }).message).toContain("refused");
+			expect(context.proposedEdits).toHaveLength(0);
+			expect(context.flaggedIssues).toEqual([
+				expect.objectContaining({ path: "memory/important.md" }),
+			]);
+			expect(await mockStorage.read("memory/important.md")).not.toBeNull();
 		});
 
 		it("should allow create for non-existent file", async () => {
