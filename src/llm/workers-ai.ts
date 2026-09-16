@@ -68,6 +68,18 @@ interface OpenAITool {
 	};
 }
 
+/** Message shape accepted by the OpenAI-compatible chat endpoint. */
+interface WireMessage {
+	role: string;
+	content: string;
+	tool_call_id?: string;
+	tool_calls?: Array<{
+		id: string;
+		type: "function";
+		function: { name: string; arguments: string };
+	}>;
+}
+
 export class WorkersAIProvider implements LLMProvider {
 	readonly name = "workers-ai";
 	readonly model: string;
@@ -83,8 +95,10 @@ export class WorkersAIProvider implements LLMProvider {
 		prompt: string | LLMMessage[],
 		options?: LLMCompletionOptions,
 	): Promise<LLMCompletionResult> {
-		// Build messages array
-		const messages: Array<{ role: string; content: string }> = [];
+		// Preserve tool-call metadata when converting internal messages to the
+		// OpenAI-compatible wire shape. The assistant call and tool result must
+		// remain paired across turns.
+		const messages: WireMessage[] = [];
 
 		// Add system prompt if provided
 		if (options?.systemPrompt) {
@@ -95,7 +109,20 @@ export class WorkersAIProvider implements LLMProvider {
 		if (typeof prompt === "string") {
 			messages.push({ role: "user", content: prompt });
 		} else {
-			messages.push(...prompt.map((m) => ({ role: m.role, content: m.content })));
+			messages.push(
+				...prompt.map((m): WireMessage => {
+					const wire: WireMessage = { role: m.role, content: m.content };
+					if (m.tool_call_id) wire.tool_call_id = m.tool_call_id;
+					if (m.tool_calls?.length) {
+						wire.tool_calls = m.tool_calls.map((tc) => ({
+							id: tc.id,
+							type: "function" as const,
+							function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+						}));
+					}
+					return wire;
+				}),
+			);
 		}
 
 		// Convert tools to OpenAI format for /v1/chat/completions endpoint
@@ -159,7 +186,7 @@ export class WorkersAIProvider implements LLMProvider {
 	 * Call the /v1/chat/completions endpoint
 	 */
 	private async callChatCompletions(
-		messages: Array<{ role: string; content: string }>,
+		messages: WireMessage[],
 		tools: OpenAITool[] | undefined,
 		options?: LLMCompletionOptions,
 	): Promise<ChatCompletionResponse> {
@@ -210,8 +237,8 @@ export class WorkersAIProvider implements LLMProvider {
 					message: {
 						role: "assistant",
 						content: legacyResponse.response ?? null,
-						tool_calls: legacyResponse.tool_calls?.map((tc, i) => ({
-							id: `call_${i}`,
+						tool_calls: legacyResponse.tool_calls?.map((tc) => ({
+							id: `call_${crypto.randomUUID()}`,
 							type: "function" as const,
 							function: {
 								name: tc.name,
@@ -275,6 +302,9 @@ export class WorkersAIProvider implements LLMProvider {
 			}
 
 			return {
+				// A call id must be unique across the accumulated conversation, not
+				// merely within one response. The value itself is never interpreted.
+				id: call.id || `call_${crypto.randomUUID()}`,
 				name: call.function.name,
 				arguments: args,
 			};

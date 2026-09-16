@@ -8,8 +8,20 @@
 export interface LLMMessage {
 	role: "system" | "user" | "assistant" | "tool";
 	content: string;
-	/** Tool call ID for tool responses */
+	/** Tool call ID for tool responses. Must match the id on the assistant
+	 *  message's `tool_calls` entry that produced this result. */
 	tool_call_id?: string;
+	/**
+	 * Tool calls the assistant requested on this turn.
+	 *
+	 * Required for multi-turn tool use: an assistant turn that made tool calls
+	 * has to carry them in the history, or the next turn shows a `tool` result
+	 * with nothing it belongs to and no record that the call ever happened.
+	 * Omitting these made the reflection agent call `listFiles` on all ten of
+	 * its iterations — each turn it was deciding to list files for the first
+	 * time, because from its point of view it was.
+	 */
+	tool_calls?: LLMToolCall[];
 }
 
 /**
@@ -36,6 +48,14 @@ export interface LLMTool {
  * Tool call from LLM response
  */
 export interface LLMToolCall {
+	/**
+	 * Provider-assigned call id, echoed back on the matching `tool` message.
+	 *
+	 * Synthesised when the provider doesn't supply one (the legacy Workers AI
+	 * response shape has no ids), since the pairing matters more than the
+	 * value.
+	 */
+	id: string;
 	name: string;
 	arguments: Record<string, unknown>;
 }

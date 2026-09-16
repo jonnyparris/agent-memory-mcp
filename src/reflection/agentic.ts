@@ -6,7 +6,7 @@
  * - Phase B: Deep Analysis (Kimi K2.6) - proposes substantive changes
  */
 
-import type { LLMMessage } from "../llm/types";
+import type { LLMCompletionResult, LLMMessage, LLMToolCall } from "../llm/types";
 import { REFLECTION_MODELS, WorkersAIProvider } from "../llm/workers-ai";
 import type { R2Storage } from "../storage/r2";
 import type { Env } from "../types";
@@ -15,6 +15,7 @@ import {
 	type FlaggedIssue,
 	type ProposedEdit,
 	type ToolExecutionContext,
+	type ToolResult,
 	createExecutionContext,
 	executeReflectionTool,
 } from "./tool-executor";
@@ -129,6 +130,29 @@ export async function runAgenticReflection(
 	};
 }
 
+/** Preserve the call/result pairing in accumulated conversation history. */
+function pushAssistantTurn(messages: LLMMessage[], result: LLMCompletionResult): void {
+	if (!result.response && !result.toolCalls?.length) return;
+
+	messages.push({
+		role: "assistant",
+		content: result.response,
+		...(result.toolCalls?.length ? { tool_calls: result.toolCalls } : {}),
+	});
+}
+
+function pushToolResult(
+	messages: LLMMessage[],
+	toolCall: LLMToolCall,
+	toolResult: ToolResult,
+): void {
+	messages.push({
+		role: "tool",
+		content: JSON.stringify(toolResult),
+		tool_call_id: toolCall.id,
+	});
+}
+
 /**
  * Phase A: Quick Scan with GLM Flash
  */
@@ -172,10 +196,7 @@ async function runQuickScan(
 				}),
 			);
 
-			// Add assistant response to history
-			if (result.response) {
-				messages.push({ role: "assistant", content: result.response });
-			}
+			pushAssistantTurn(messages, result);
 
 			// Check for tool calls
 			if (!result.toolCalls || result.toolCalls.length === 0) {
@@ -190,12 +211,7 @@ async function runQuickScan(
 			for (const toolCall of result.toolCalls) {
 				const toolResult = await executeReflectionTool(toolCall, context);
 
-				// Add tool result to messages
-				messages.push({
-					role: "tool",
-					content: JSON.stringify(toolResult),
-					tool_call_id: toolCall.name,
-				});
+				pushToolResult(messages, toolCall, toolResult);
 
 				// Check if quick scan is complete
 				if (toolCall.name === "finishQuickScan" && toolResult.success) {
@@ -266,10 +282,7 @@ async function runDeepAnalysis(
 				}),
 			);
 
-			// Add assistant response to history
-			if (result.response) {
-				messages.push({ role: "assistant", content: result.response });
-			}
+			pushAssistantTurn(messages, result);
 
 			// Check for tool calls
 			if (!result.toolCalls || result.toolCalls.length === 0) {
@@ -285,12 +298,7 @@ async function runDeepAnalysis(
 			for (const toolCall of result.toolCalls) {
 				const toolResult = await executeReflectionTool(toolCall, context);
 
-				// Add tool result to messages
-				messages.push({
-					role: "tool",
-					content: JSON.stringify(toolResult),
-					tool_call_id: toolCall.name,
-				});
+				pushToolResult(messages, toolCall, toolResult);
 
 				// Check if reflection is complete
 				if (toolCall.name === "finishReflection" && toolResult.success) {
