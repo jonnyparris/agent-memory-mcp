@@ -1,0 +1,19 @@
+wrangler.jsonc
+  s_308476af7fb4d7::t_44ea816cdb6e0b 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c675e847d8a616c05e7cf6e90675726c6bbc232d",
+  "prompts": {},
+  "sessions": {
+    "s_308476af7fb4d7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00f33e26affe2RknsVCMtAR4Dj",
+        "model": "claude-haiku-4-5"
+      },
+      "human_author": "Simona Badoiu <sbadoiu@cloudflare.com>"
+    }
+  }
+}
