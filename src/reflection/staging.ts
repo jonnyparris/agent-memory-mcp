@@ -18,6 +18,7 @@ export interface StagedReflection {
 	summary: string;
 	proposedEdits: ProposedEdit[];
 	autoAppliedFixes: AutoAppliedFix[];
+	failedEdits?: string[];
 	flaggedIssues: FlaggedIssue[];
 	quickScanIterations: number;
 	deepAnalysisIterations: number;
@@ -79,6 +80,7 @@ function buildStagedContent(reflection: StagedReflection): string {
 		summary,
 		proposedEdits,
 		autoAppliedFixes,
+		failedEdits = [],
 		flaggedIssues,
 		quickScanIterations,
 		deepAnalysisIterations,
@@ -101,8 +103,18 @@ ${summary}
 | Deep Analysis Iterations | ${deepAnalysisIterations} |
 | Auto-Applied Fixes | ${autoAppliedFixes.length} |
 | Proposed Changes | ${proposedEdits.length} |
+| Failed Changes | ${failedEdits.length} |
 | Issues Flagged | ${flaggedIssues.length} |
 `);
+
+	if (failedEdits.length > 0) {
+		sections.push(`## Failed Changes
+
+These writes changed storage but did not update the search index:
+
+${failedEdits.map((failure) => `- ${failure}`).join("\n")}
+`);
+	}
 
 	// Auto-applied fixes section
 	if (autoAppliedFixes.length > 0) {
