@@ -378,6 +378,13 @@ async function executeAutoApply(
 			break;
 	}
 
+	if (newContent.trim().length === 0) {
+		return {
+			success: false,
+			error: `Refusing to auto-apply a ${args.fixType} fix that would leave ${args.path} blank.`,
+		};
+	}
+
 	// Refuse a deletion large enough to be a content decision rather than a
 	// cosmetic tidy. Measured on net shrinkage, so a replacement that swaps
 	// text of similar length is unaffected.

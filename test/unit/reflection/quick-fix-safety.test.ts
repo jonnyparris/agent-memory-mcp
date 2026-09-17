@@ -35,9 +35,8 @@ describe("quick fix safety", () => {
 				delete: vi.fn(async () => undefined),
 			} as unknown as ToolExecutionContext["storage"],
 			env: {
-				// indexWrite reaches for the DO; a stub keeps these unit-level. The
-				// call is asserted via storage.write, which indexWrite performs
-				// first.
+				// indexWrite reaches for the DO; a stub keeps these unit-level and
+				// lets tests assert the index update directly.
 				MEMORY_INDEX: {
 					idFromName: () => ({}),
 					get: () => ({
@@ -101,6 +100,23 @@ describe("quick fix safety", () => {
 
 		expect(result.success).toBe(false);
 		expect(written).toHaveLength(0);
+	});
+
+	it("refuses to replace a small file with whitespace-only content", async () => {
+		fileContent = "# Small file\n";
+		context = makeContext();
+
+		const result = await applyFix({
+			fixType: "duplicate",
+			oldText: fileContent,
+			newText: "\n",
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("would leave");
+		expect(result.error).toContain("blank");
+		expect(written).toHaveLength(0);
+		expect(context.autoAppliedFixes).toHaveLength(0);
 	});
 
 	it("allows a same-length replacement regardless of size", async () => {

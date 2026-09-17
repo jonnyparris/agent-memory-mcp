@@ -249,6 +249,7 @@ async function runAgenticReflectionFlow(
 		summary: agenticResult.summary || "No summary provided.",
 		proposedEdits: agenticResult.proposedEdits,
 		autoAppliedFixes: agenticResult.autoAppliedFixes,
+		failedEdits,
 		// A refused deletion is surfaced as a flagged issue so it lands in the
 		// archived record and the caller's response instead of vanishing. The
 		// whole point of refusing is that a human decides.
@@ -343,7 +344,11 @@ async function runAgenticReflectionFlow(
 				issue: `Reflection proposed deleting this file and was refused: ${e.reason}`,
 			})),
 		],
-		error: agenticResult.error,
+		error:
+			agenticResult.error ??
+			(failedEdits.length > 0
+				? `Reflection completed with partial failures: ${failedEdits.join("; ")}`
+				: undefined),
 	};
 }
 

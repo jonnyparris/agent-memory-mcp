@@ -75,5 +75,18 @@ describe("reflection write consistency", () => {
 			expect.stringContaining("content was saved, but the search index update failed"),
 		]);
 		expect(result.failedEdits?.[0]).toContain("Reindex this file");
+		expect(result.error).toContain("Reflection completed with partial failures");
+		expect(result.error).toContain("Reindex this file");
+
+		const archivedMarkdown = await mocks.storage?.read(
+			`memory/reflections/archive/${result.date}.md`,
+		);
+		expect(archivedMarkdown?.content).toContain("## Failed Changes");
+		expect(archivedMarkdown?.content).toContain("Reindex this file");
+
+		const archivedJson = await mocks.storage?.read(
+			`memory/reflections/archive/${result.date}.json`,
+		);
+		expect(JSON.parse(archivedJson?.content ?? "{}").failedEdits).toEqual(result.failedEdits);
 	});
 });
