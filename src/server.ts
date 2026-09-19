@@ -9,6 +9,7 @@ import {
 	loadConversationIndex,
 } from "./conversations";
 import { errResult, okResult, registerTool } from "./helpers";
+import { type JevAi, rerankSearchResults } from "./jev";
 import {
 	archiveReflection,
 	listPendingReflections,
@@ -108,7 +109,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"write",
 		{
 			description:
-				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths by default.\n\nLatency tuning: pass `wait_for_index: false` to defer the embedding update via `waitUntil` — the R2 write still completes synchronously, but the search index becomes consistent ~1–3s later. Pass `detect_overlaps: false` to skip the post-write similarity search (saves another DO round-trip plus R2 reads). Both default to the safe/correct values; flip them when you already know what you're doing (overwriting a known file, bulk edits).\n\nEmpty content is refused by default — pass `allow_empty: true` to truncate a file deliberately.",
+				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths by default, each with a Jev-classified relationship (duplicate/supersedes/related/distinct) and a suggested action. Content that looks like it contains live credentials is stored but refused indexing.\n\nLatency tuning: pass `wait_for_index: false` to defer the embedding update via `waitUntil` — the R2 write still completes synchronously, but the search index becomes consistent ~1–3s later. Pass `detect_overlaps: false` to skip the post-write similarity search (saves another DO round-trip plus R2 reads). Both default to the safe/correct values; flip them when you already know what you're doing (overwriting a known file, bulk edits).\n\nEmpty content is refused by default — pass `allow_empty: true` to truncate a file deliberately.",
 			inputSchema: {
 				path: z.string().describe("File path, e.g., 'memory/learnings.md'"),
 				content: z.string().describe("Content to write"),
@@ -191,13 +192,25 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					"Semantically similar content already exists in the paths above. " +
 					"Consider merging or updating the existing file instead of creating redundant entries.";
 			}
+			if (result.overlap_analysis && result.overlap_analysis.length > 0) {
+				response.overlap_analysis = result.overlap_analysis;
+			}
+			if (result.secret_warning) {
+				response.secret_warning = result.secret_warning;
+			}
 
 			const parts = [`Wrote ${path} (${content.length} bytes)`];
 			if (result.tags.length > 0) parts.push(`tags: ${result.tags.join(", ")}`);
 			if (result.index_deferred) parts.push("index update deferred");
 			if (result.index_skipped) parts.push(`not indexed (${result.index_skipped})`);
+			if (result.secret_warning) parts.push("possible credentials — not indexed");
 			if (result.overlaps && result.overlaps.length > 0) {
 				parts.push(`${result.overlaps.length} similar file(s) already exist`);
+			}
+			if (result.overlap_analysis && result.overlap_analysis.length > 0) {
+				for (const a of result.overlap_analysis) {
+					parts.push(`${a.path}: ${a.verdict} — ${a.action}`);
+				}
 			}
 			return okResult(response, parts.join(" · "));
 		},
@@ -394,6 +407,13 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					.optional()
 					.default("memory")
 					.describe("What to search. Defaults to memory files only."),
+				rerank: z
+					.boolean()
+					.optional()
+					.default(false)
+					.describe(
+						"Re-rank memory results by calibrated relevance (Jev, one extra ~1-2s call). Cosine score measures similarity; this measures whether the content actually answers the query. Opt-in.",
+					),
 			},
 		},
 		async ({
@@ -401,11 +421,13 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			limit,
 			tags,
 			scope,
+			rerank,
 		}: {
 			query: string;
 			limit?: number;
 			tags?: string[];
 			scope?: "memory" | "conversations" | "all";
+			rerank?: boolean;
 		}) => {
 			const effectiveLimit = limit ?? 5;
 			const searchScope = scope ?? "memory";
@@ -465,10 +487,26 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				});
 			}
 
+			let results = enrichedMemory;
+			let rerankApplied = false;
+			if (rerank === true && results.length >= 2) {
+				const outcome = await rerankSearchResults(env.AI as unknown as JevAi, query, results);
+				if (outcome) {
+					results = outcome.order.map((i) => ({
+						...results[i],
+						jev_probability: outcome.probabilities[String(i)] ?? 0,
+					}));
+					rerankApplied = true;
+				}
+			}
+
 			if (searchScope === "memory") {
 				return okResult(
-					{ results: enrichedMemory },
-					`Found ${enrichedMemory.length} match${enrichedMemory.length === 1 ? "" : "es"} for "${query}"`,
+					{
+						results,
+						...(rerankApplied ? { rerank: "jev" as const } : {}),
+					},
+					`Found ${results.length} match${results.length === 1 ? "" : "es"} for "${query}"${rerankApplied ? " (Jev re-ranked)" : ""}`,
 				);
 			}
 			if (searchScope === "conversations") {

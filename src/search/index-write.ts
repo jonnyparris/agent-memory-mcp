@@ -1,3 +1,4 @@
+import { type JevAi, type OverlapAnalysis, checkForSecrets, classifyOverlap } from "../jev";
 import type { R2Storage } from "../storage/r2";
 import { parseTags } from "../tags";
 import { extractSnippet } from "../truncate";
@@ -13,6 +14,16 @@ export interface IndexWriteResult {
 	links: string[];
 	embedding_error?: string;
 	overlaps?: Array<{ path: string; score: number; snippet: string }>;
+	/**
+	 * Jev-classified relationship for each flagged overlap (when the
+	 * classification succeeded). `verdict` + a concrete `action` suggestion.
+	 */
+	overlap_analysis?: OverlapAnalysis[];
+	/**
+	 * Set when the calibrated credential gate matched (noul ≥ threshold).
+	 * The R2 write succeeded but the file was NOT indexed.
+	 */
+	secret_warning?: string;
 	/**
 	 * `true` when the embedding update was deferred via `ctx.waitUntil` and
 	 * has not been awaited. The R2 write has already landed; the search
@@ -154,6 +165,20 @@ export async function indexWrite(
 	// freshly-updated index.
 	const shouldDefer = options.ctx && options.waitForIndex === false && !wantOverlaps;
 
+	const ai = env.AI as unknown as JevAi;
+
+	// Calibrated credential gate — runs on every indexable write (denylisted
+	// paths never reach search, so there's nothing to protect there). On a
+	// confident hit the file is stored but not embedded, mirroring denylist
+	// behaviour; fail-open keeps a Jev outage from blocking writes.
+	const hasSecret = await checkForSecrets(ai, content);
+	if (hasSecret === true) {
+		response.index_skipped = "possible-credentials";
+		response.secret_warning =
+			"Content looks like it contains live credentials, so it was stored but NOT indexed (it will not appear in search results). Re-write the file if this is a false positive.";
+		return response;
+	}
+
 	const index = getMemoryIndex(env);
 
 	if (shouldDefer && options.ctx) {
@@ -194,6 +219,22 @@ export async function indexWrite(
 			);
 			if (overlaps.length > 0) {
 				response.overlaps = overlaps;
+				// Calibrated relationship analysis per flagged overlap — turns
+				// "these look similar" into a concrete verdict + action.
+				const analyses = (
+					await Promise.all(
+						overlaps.map((o) =>
+							classifyOverlap(ai, path, content, {
+								path: o.path,
+								snippet: o.snippet,
+								score: o.score,
+							}),
+						),
+					)
+				).filter((a): a is OverlapAnalysis => a !== null);
+				if (analyses.length > 0) {
+					response.overlap_analysis = analyses;
+				}
 			}
 		}
 	} catch (e) {
