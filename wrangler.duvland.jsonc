@@ -1,0 +1,57 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// Deployment config for the duvland agent's memory instance.
+	//
+	// Shares code with the main `agent-memory-mcp` worker but is a distinct
+	// deployment: its own R2 bucket (NOT agent-memory) and its own
+	// MemoryIndex DO instance. Deploy with:
+	//   npx wrangler deploy --config wrangler.duvland.jsonc
+	//
+	// Do NOT use `wrangler deploy --name agent-memory-mcp-duvland` with the
+	// default config — the bucket binding travels with the config, so a
+	// name-only override silently re-points the worker at the wrong bucket
+	// and orphans the instance's data (that happened 2026-09-19; the
+	// vectors survived in DO storage, so search kept returning paths whose
+	// objects lived in the other bucket).
+	"name": "agent-memory-mcp-duvland",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-16",
+	"compatibility_flags": ["nodejs_compat"],
+
+	"r2_buckets": [
+		{
+			"binding": "MEMORY_BUCKET",
+			"bucket_name": "duvland"
+		}
+	],
+
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MEMORY_INDEX",
+				"class_name": "MemoryIndex"
+			}
+		]
+	},
+
+	"ai": {
+		"binding": "AI"
+	},
+
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MemoryIndex"]
+		}
+	],
+
+	"triggers": {
+		"crons": ["0 6 * * *"]
+	},
+
+	"vars": {
+		"REFLECTION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+		"REFLECTION_MODEL_FAST": "@cf/zai-org/glm-4.7-flash",
+		"USE_AGENTIC_REFLECTION": "true"
+	}
+}
