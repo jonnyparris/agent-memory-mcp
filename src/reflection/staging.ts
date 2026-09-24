@@ -22,6 +22,9 @@ export interface StagedReflection {
 	flaggedIssues: FlaggedIssue[];
 	quickScanIterations: number;
 	deepAnalysisIterations: number;
+	/** Whether each phase finished on its own. Absent on older records. */
+	quickScanFinished?: boolean;
+	deepAnalysisFinished?: boolean;
 }
 
 /**
@@ -84,7 +87,11 @@ function buildStagedContent(reflection: StagedReflection): string {
 		flaggedIssues,
 		quickScanIterations,
 		deepAnalysisIterations,
+		quickScanFinished,
+		deepAnalysisFinished,
 	} = reflection;
+	const finishedLabel = (v: boolean | undefined) =>
+		v === undefined ? "" : v ? " (finished)" : " (did not finish)";
 
 	const sections: string[] = [];
 
@@ -99,8 +106,8 @@ ${summary}
 
 | Metric | Value |
 |--------|-------|
-| Quick Scan Iterations | ${quickScanIterations} |
-| Deep Analysis Iterations | ${deepAnalysisIterations} |
+| Quick Scan Iterations | ${quickScanIterations}${finishedLabel(quickScanFinished)} |
+| Deep Analysis Iterations | ${deepAnalysisIterations}${finishedLabel(deepAnalysisFinished)} |
 | Auto-Applied Fixes | ${autoAppliedFixes.length} |
 | Proposed Changes | ${proposedEdits.length} |
 | Failed Changes | ${failedEdits.length} |

@@ -17,7 +17,13 @@ vi.mock("../../../src/llm/workers-ai", () => ({
 }));
 
 import { WorkersAIProvider } from "../../../src/llm/workers-ai";
-import { runAgenticReflection, runDeepAnalysisOnly } from "../../../src/reflection/agentic";
+import {
+	MAX_DEEP_ANALYSIS_ITERATIONS,
+	MAX_QUICK_SCAN_ITERATIONS,
+	compactHistory,
+	runAgenticReflection,
+	runDeepAnalysisOnly,
+} from "../../../src/reflection/agentic";
 
 describe("runAgenticReflection", () => {
 	let mockStorage: ReturnType<typeof createMockStorage>;
@@ -242,10 +248,99 @@ describe("runAgenticReflection", () => {
 
 		const result = await runAgenticReflection(mockEnv, mockStorage);
 
-		// Should complete within iteration limits (5 for quick scan + 10 for deep)
+		// Stops at the caps, and says it ran out of turns rather than finishing.
 		expect(result.success).toBe(true);
-		expect(result.quickScanIterations).toBeLessThanOrEqual(5);
-		expect(result.deepAnalysisIterations).toBeLessThanOrEqual(10);
+		expect(result.quickScanIterations).toBe(MAX_QUICK_SCAN_ITERATIONS);
+		expect(result.deepAnalysisIterations).toBe(MAX_DEEP_ANALYSIS_ITERATIONS);
+		expect(result.quickScanFinished).toBe(false);
+		expect(result.deepAnalysisFinished).toBe(false);
+		expect(result.summary).toContain("ran out of turns");
+	});
+
+	it("hands both phases a file inventory so they don't spend a turn listing", async () => {
+		mockLLMComplete.mockResolvedValue({ response: "done", toolCalls: undefined });
+
+		await runAgenticReflection(mockEnv, mockStorage);
+
+		const quickPrompt = mockLLMComplete.mock.calls[0][0][0].content as string;
+		const deepPrompt = mockLLMComplete.mock.calls[1][0][0].content as string;
+		expect(quickPrompt).toContain("memory/learnings.md");
+		expect(deepPrompt).toContain("memory/learnings.md");
+	});
+
+	it("warns near the end of the budget and narrows tools on the final turn", async () => {
+		mockLLMComplete.mockResolvedValue({
+			response: "",
+			toolCalls: [{ id: "c", name: "readFile", arguments: { path: "memory/learnings.md" } }],
+		});
+
+		await runDeepAnalysisOnly(mockEnv, mockStorage);
+
+		const calls = mockLLMComplete.mock.calls;
+		expect(calls).toHaveLength(MAX_DEEP_ANALYSIS_ITERATIONS);
+
+		const lastMessages = calls[calls.length - 1][0] as Array<{ role: string; content: string }>;
+		const lastUser = [...lastMessages].reverse().find((m) => m.role === "user");
+		expect(lastUser?.content).toContain("final turn");
+
+		const lastTools = (calls[calls.length - 1][1].tools as Array<{ name: string }>).map(
+			(t) => t.name,
+		);
+		expect(lastTools.sort()).toEqual(["finishReflection", "flagIssue", "proposeEdit"]);
+
+		// Earlier turns get the full tool set.
+		const firstTools = (calls[0][1].tools as Array<{ name: string }>).map((t) => t.name);
+		expect(firstTools).toContain("readFile");
+	});
+
+	it("does not treat an empty stop as finishing", async () => {
+		mockLLMComplete.mockResolvedValue({ response: "", toolCalls: undefined });
+
+		const result = await runDeepAnalysisOnly(mockEnv, mockStorage);
+
+		// One initial try plus two retries, then it gives up as unfinished.
+		expect(mockLLMComplete).toHaveBeenCalledTimes(3);
+		expect(result.deepAnalysisFinished).toBe(false);
+		const retryPrompt = mockLLMComplete.mock.calls[1][0].at(-1).content as string;
+		expect(retryPrompt).toContain("stopped without an answer");
+	});
+
+	it("sends a halfway checkpoint when nothing has been recorded", async () => {
+		mockLLMComplete.mockResolvedValue({
+			response: "",
+			toolCalls: [{ id: "c", name: "readFile", arguments: { path: "memory/learnings.md" } }],
+		});
+
+		await runDeepAnalysisOnly(mockEnv, mockStorage);
+
+		const prompts = (mockLLMComplete.mock.calls.at(-1) as any[])[0]
+			.filter((m: { role: string }) => m.role === "user")
+			.map((m: { content: string }) => m.content);
+		expect(prompts.filter((p: string) => p.startsWith("Checkpoint:"))).toHaveLength(1);
+	});
+
+	it("runs every tool call in a turn, even alongside finishReflection", async () => {
+		mockLLMComplete.mockResolvedValueOnce({
+			response: "",
+			toolCalls: [
+				{
+					id: "c1",
+					name: "flagIssue",
+					arguments: { path: "memory/learnings.md", issue: "stale entry" },
+				},
+				{
+					id: "c2",
+					name: "finishReflection",
+					arguments: { summary: "one issue", proposedChanges: 0, autoApplied: 0 },
+				},
+			],
+		});
+
+		const result = await runDeepAnalysisOnly(mockEnv, mockStorage);
+
+		expect(result.deepAnalysisFinished).toBe(true);
+		expect(result.flaggedIssues).toEqual([{ path: "memory/learnings.md", issue: "stale entry" }]);
+		expect(result.summary).toBe("one issue");
 	});
 
 	it("should handle LLM response with no tool calls", async () => {
@@ -402,5 +497,29 @@ describe("WorkersAIProvider tool calling", () => {
 		const result = await provider.complete("test");
 
 		expect(result.toolCalls?.[0].arguments).toEqual({ path: "memory/test.md" });
+	});
+});
+
+describe("compactHistory", () => {
+	it("shortens the oldest tool results first and leaves small messages alone", () => {
+		const messages = [
+			{ role: "user" as const, content: "start" },
+			{ role: "tool" as const, content: "a".repeat(5000), tool_call_id: "1" },
+			{ role: "tool" as const, content: "b".repeat(5000), tool_call_id: "2" },
+		];
+
+		compactHistory(messages, 6000);
+
+		expect(messages[0].content).toBe("start");
+		expect(messages[1].content.length).toBeLessThan(500);
+		expect(messages[1].content).toContain("shortened");
+		expect(messages[2].content).toBe("b".repeat(5000));
+		expect(messages[1].tool_call_id).toBe("1");
+	});
+
+	it("does nothing when under budget", () => {
+		const messages = [{ role: "tool" as const, content: "a".repeat(100), tool_call_id: "1" }];
+		compactHistory(messages, 1000);
+		expect(messages[0].content).toBe("a".repeat(100));
 	});
 });

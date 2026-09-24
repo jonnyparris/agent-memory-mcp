@@ -128,6 +128,8 @@ export function buildReflectionCard(
 		edits?: ReflectionChange[];
 		failedEdits?: string[];
 		flaggedIssues?: FlaggedIssueSummary[];
+		/** A phase ran out of turns, so "nothing found" is not a result. */
+		incomplete?: boolean;
 	},
 ): ChatCard {
 	const sections: ChatCard["sections"] = [
@@ -207,8 +209,14 @@ export function buildReflectionCard(
 		});
 	}
 
-	// If nothing happened at all, say so
-	if (quickFixes.length === 0 && edits.length === 0 && flaggedIssues.length === 0) {
+	// If nothing happened at all, say so — unless the run gave up early, in
+	// which case "looks good" would be a lie.
+	if (
+		!options?.incomplete &&
+		quickFixes.length === 0 &&
+		edits.length === 0 &&
+		flaggedIssues.length === 0
+	) {
 		sections.push({
 			widgets: [
 				{
@@ -222,7 +230,7 @@ export function buildReflectionCard(
 
 	return {
 		header: {
-			title: "Memory Reflection",
+			title: options?.incomplete ? "Memory Reflection (incomplete)" : "Memory Reflection",
 			subtitle: date,
 		},
 		sections,

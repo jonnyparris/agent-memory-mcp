@@ -74,6 +74,104 @@ describe("executeReflectionTool", () => {
 			expect((result.result as any).truncated).toBe(true);
 			expect((result.result as any).content.length).toBeLessThan(20000);
 		});
+
+		it("pages through a large file with offset until nothing is left", async () => {
+			const largeContent = `${"A".repeat(15000)}${"B".repeat(15000)}TAIL`;
+			mockStorage._files.set("memory/large.md", {
+				content: largeContent,
+				updated_at: "2026-02-04T10:00:00Z",
+			});
+
+			const first = (
+				await executeReflectionTool(
+					{ id: "c1", name: "readFile", arguments: { path: "memory/large.md" } },
+					context,
+				)
+			).result as any;
+			expect(first.truncated).toBe(true);
+			expect(first.nextOffset).toBe(15000);
+			expect(first.totalChars).toBe(largeContent.length);
+
+			const second = (
+				await executeReflectionTool(
+					{
+						id: "c2",
+						name: "readFile",
+						arguments: { path: "memory/large.md", offset: first.nextOffset },
+					},
+					context,
+				)
+			).result as any;
+			const third = (
+				await executeReflectionTool(
+					{
+						id: "c3",
+						name: "readFile",
+						arguments: { path: "memory/large.md", offset: second.nextOffset },
+					},
+					context,
+				)
+			).result as any;
+
+			expect(third.truncated).toBe(false);
+			expect(third.nextOffset).toBeUndefined();
+			expect(first.content + second.content + third.content).toBe(largeContent);
+		});
+	});
+
+	describe("dry run", () => {
+		it("records an auto-fix without writing it", async () => {
+			mockStorage._files.set("memory/learnings.md", {
+				content: "teh lesson\n",
+				updated_at: "2026-02-04T10:00:00Z",
+			});
+			const dry = createExecutionContext(mockStorage, context.env, { dryRun: true });
+
+			const result = await executeReflectionTool(
+				{
+					id: "c",
+					name: "autoApply",
+					arguments: {
+						path: "memory/learnings.md",
+						fixType: "typo",
+						oldText: "teh",
+						newText: "the",
+						reason: "typo",
+					},
+				},
+				dry,
+			);
+
+			expect(result.success).toBe(true);
+			expect(dry.autoAppliedFixes).toHaveLength(1);
+			expect((await mockStorage.read("memory/learnings.md"))?.content).toBe("teh lesson\n");
+		});
+	});
+
+	describe("flagIssue", () => {
+		it("rejects a flag with no path or issue", async () => {
+			const result = await executeReflectionTool(
+				{ id: "call_flag", name: "flagIssue", arguments: {} },
+				context,
+			);
+			expect(result.success).toBe(false);
+			expect(context.flaggedIssues).toEqual([]);
+		});
+
+		it("records the issue for the human", async () => {
+			const result = await executeReflectionTool(
+				{
+					id: "call_flag",
+					name: "flagIssue",
+					arguments: { path: "memory/learnings.md", issue: "two entries contradict" },
+				},
+				context,
+			);
+			expect(result.success).toBe(true);
+			expect(context.flaggedIssues).toEqual([
+				{ path: "memory/learnings.md", issue: "two entries contradict" },
+			]);
+		});
 	});
 
 	describe("listFiles", () => {
@@ -212,6 +310,57 @@ describe("executeReflectionTool", () => {
 			expect(result.success).toBe(true);
 			expect(context.proposedEdits).toHaveLength(1);
 			expect(context.proposedEdits[0].action).toBe("replace");
+		});
+
+		it("refuses a replace that drops most of the file, and flags it", async () => {
+			mockStorage._files.set("memory/learnings.md", {
+				content: "x".repeat(10000),
+				updated_at: "2026-02-04T10:00:00Z",
+			});
+
+			const result = await executeReflectionTool(
+				{
+					id: "call_test",
+					name: "proposeEdit",
+					arguments: {
+						path: "memory/learnings.md",
+						action: "replace",
+						content: "only the first page, tidied",
+						reason: "reorganise",
+					},
+				},
+				context,
+			);
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("replace must contain the whole file");
+			expect(context.proposedEdits).toEqual([]);
+			expect(context.flaggedIssues).toHaveLength(1);
+			expect(context.flaggedIssues[0].issue).toContain("reorganise");
+		});
+
+		it("allows a replace that keeps most of the file", async () => {
+			mockStorage._files.set("memory/learnings.md", {
+				content: "x".repeat(1000),
+				updated_at: "2026-02-04T10:00:00Z",
+			});
+
+			const result = await executeReflectionTool(
+				{
+					id: "call_test",
+					name: "proposeEdit",
+					arguments: {
+						path: "memory/learnings.md",
+						action: "replace",
+						content: "y".repeat(800),
+						reason: "trim a stale entry",
+					},
+				},
+				context,
+			);
+
+			expect(result.success).toBe(true);
+			expect(context.proposedEdits).toHaveLength(1);
 		});
 
 		it("should reject edit for non-existent file (except create)", async () => {

@@ -5,6 +5,8 @@
  *   GET  /health   — public, returns server version. No auth.
  *   POST /reflect  — REST, auth required. Manually triggers a reflection
  *                    run. Returns a JSON ReflectionResult, NOT JSON-RPC.
+ *                    Add ?dry_run=1 to see what it would do without writing
+ *                    anything or sending the chat notification.
  *   ANY  /mcp      — MCP Streamable HTTP transport, auth required. Serves
  *                    the full MCP tool surface (read/write/search/etc).
  *                    All responses are JSON-RPC 2.0.
@@ -53,7 +55,8 @@ export default {
 				return unauthorizedResponse(authResult.error!);
 			}
 
-			const result = await runReflection(env);
+			const dryRun = ["1", "true"].includes(url.searchParams.get("dry_run") ?? "");
+			const result = await runReflection(env, { dryRun });
 			return new Response(JSON.stringify(result, null, 2), {
 				headers: { "Content-Type": "application/json" },
 			});

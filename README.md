@@ -217,7 +217,9 @@ The server includes an automated self-improvement system. Every day at 6am UTC, 
 
 **Quick scan** (GLM 4.7 Flash) catches simple issues -- typos, broken formatting, duplicate entries -- and fixes them automatically.
 
-**Deep analysis** (Moonshot Kimi K2.6, 262k context, agentic) looks for contradictions, outdated information, gaps, orphaned files, and missing cross-references. It proposes changes for you to review, including adding `[[wikilinks]]` where files clearly relate but don't reference each other. It uses the backlink index to understand which files are hubs and which are orphans before proposing merges or deletes.
+**Deep analysis** (Gemma 4 26B by default, agentic) looks for contradictions, outdated information, gaps, orphaned files, and missing cross-references. It can edit files (applied automatically after the run) or flag an issue for you. Edits have guards: whole-file deletes are never applied, and a `replace` that drops more than 30% of a file is refused and flagged instead. It uses the backlink index to understand which files are hubs and which are orphans.
+
+Each phase has a turn budget (12 for quick scan, 25 for deep analysis) and is told when it's running low. If a phase runs out of turns or stops without an answer, the notification says the run was **incomplete**. It does not say "memory looks good".
 
 Override the defaults with `REFLECTION_MODEL` and `REFLECTION_MODEL_FAST` in `wrangler.jsonc` or as secrets if you want to try a different pair.
 
@@ -228,9 +230,11 @@ curl -X POST "https://your-worker.workers.dev/reflect" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
+Add `?dry_run=1` to see what a run would do without writing anything or sending the notification. A full run takes several minutes.
+
 ### What the scheduled reflection is *not*
 
-The cron-driven reflection is a lightweight, autonomous scan. It runs unattended on a budget of a few iterations and writes proposals to `memory/reflections/pending/{date}.md` (empty proposals get archived to `memory/reflections/archive/{date}.md` to make zero-output runs visible).
+The cron-driven reflection is a lightweight, autonomous scan. It runs unattended on a fixed turn budget and writes proposals to `memory/reflections/pending/{date}.md` (empty proposals get archived to `memory/reflections/archive/{date}.md` to make zero-output runs visible).
 
 This is **not the same as** a deep reflection workflow you might drive from your agent — e.g. a `/nightly-reflect` slash command that pulls your entire week of activity (calendar, git log, scratch notes, chat history) and writes a multi-section improvement plan. The cron has none of that context. It only sees what's already in memory.
 

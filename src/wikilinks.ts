@@ -72,3 +72,33 @@ export function parseWikilinks(content: string): string[] {
 
 	return out;
 }
+
+/**
+ * Every spelling a link to `target` might use.
+ *
+ * Links are stored exactly as written, so a file at `memory/foo.md` may be
+ * referenced as `[[memory/foo]]`, `[[foo]]`, `[[foo.md]]` or
+ * `[[memory/foo.md]]`. Callers usually ask by file path. Matching only the
+ * literal string made every such lookup return zero, so the reflection agent
+ * concluded that hub files like preferences.md were orphans.
+ */
+export function backlinkTargetVariants(target: string): string[] {
+	const base = normalizeTarget(target);
+	if (!base) return [];
+	const noExt = base.replace(/\.md$/i, "");
+	const noPrefix = noExt.replace(/^memory\//, "");
+	// Obsidian's default "shortest path" style links by bare file name.
+	const baseName = noPrefix.slice(noPrefix.lastIndexOf("/") + 1);
+	const out = new Set<string>([
+		baseName,
+		`${baseName}.md`,
+		base,
+		noExt,
+		`${noExt}.md`,
+		noPrefix,
+		`${noPrefix}.md`,
+		`memory/${noPrefix}`,
+		`memory/${noPrefix}.md`,
+	]);
+	return [...out];
+}

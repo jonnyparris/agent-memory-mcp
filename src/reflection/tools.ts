@@ -14,9 +14,10 @@ import type { LLMTool } from "../llm/types";
  * 1. Search memory semantically to find relevant files
  * 2. Read full file contents
  * 3. List directory contents
- * 4. Propose edits (staged for human review)
- * 5. Auto-apply low-risk fixes (typos, formatting)
- * 6. Finish reflection with a summary
+ * 4. Propose edits (auto-applied after the run, with guards)
+ * 5. Flag issues for a human
+ * 6. Auto-apply low-risk fixes (typos, formatting)
+ * 7. Finish reflection with a summary
  */
 export const REFLECTION_TOOLS: LLMTool[] = [
 	{
@@ -41,13 +42,18 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 	{
 		name: "readFile",
 		description:
-			"Read the full contents of a memory file. Use after searchMemory to get details, or when you know the exact path.",
+			"Read a memory file. Returns up to 15,000 characters per call. If the result says truncated, call again with offset set to nextOffset to read the rest.",
 		parameters: {
 			type: "object",
 			properties: {
 				path: {
 					type: "string",
 					description: "File path relative to memory root, e.g., 'memory/learnings.md'",
+				},
+				offset: {
+					type: "number",
+					description:
+						"Character offset to start reading from (default 0). Use nextOffset from a truncated read.",
 				},
 			},
 			required: ["path"],
@@ -81,7 +87,7 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 				target: {
 					type: "string",
 					description:
-						"Wikilink target as written inside [[...]]. For a file at memory/foo.md this is typically 'memory/foo' or 'foo' depending on how it's linked.",
+						"The file to look up, e.g. 'memory/foo.md'. Links written as [[memory/foo]], [[foo]] or [[foo.md]] all count.",
 				},
 			},
 			required: ["target"],
@@ -90,7 +96,7 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 	{
 		name: "proposeEdit",
 		description:
-			"Propose an edit to a memory file. All proposed changes are staged for human review before being applied.",
+			"Edit a memory file. Edits are applied automatically after the run, with no human in the loop. 'append' adds text to the end of the file (safest). 'replace' overwrites the WHOLE file with content, so content must be the complete new file; a replace that drops a large part of an existing file is refused and flagged instead. 'create' makes a new file. 'delete' is never applied; it is flagged for a human. If you cannot write the complete fix, use flagIssue instead.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -150,6 +156,25 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 		},
 	},
 	{
+		name: "flagIssue",
+		description:
+			"Record a problem for a human to fix, without editing anything. Use when the fix is too big or too risky to write as an edit (for example a large file that needs restructuring, or a contradiction you can't resolve).",
+		parameters: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "File path with the issue",
+				},
+				issue: {
+					type: "string",
+					description: "What is wrong and what the fix should be. Be specific.",
+				},
+			},
+			required: ["path", "issue"],
+		},
+	},
+	{
 		name: "finishReflection",
 		description:
 			"Complete the reflection with a summary. Call this when you have finished analyzing memory and proposing changes.",
@@ -163,7 +188,7 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 				},
 				proposedChanges: {
 					type: "number",
-					description: "Total number of changes proposed for human review",
+					description: "Total number of edits proposed with proposeEdit",
 				},
 				autoApplied: {
 					type: "number",
@@ -201,13 +226,18 @@ export const QUICK_SCAN_TOOLS: LLMTool[] = [
 	},
 	{
 		name: "readFile",
-		description: "Read a file to check for formatting issues.",
+		description:
+			"Read a file to check for formatting issues. Returns up to 15,000 characters; pass offset=nextOffset to continue a truncated file.",
 		parameters: {
 			type: "object",
 			properties: {
 				path: {
 					type: "string",
 					description: "File path to read",
+				},
+				offset: {
+					type: "number",
+					description: "Character offset to start reading from (default 0)",
 				},
 			},
 			required: ["path"],

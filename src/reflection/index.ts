@@ -23,6 +23,7 @@ import { createR2Storage } from "../storage/r2";
 import type { Env, MemoryFileMetadata } from "../types";
 import { type AgenticReflectionResult, runAgenticReflection } from "./agentic";
 import { type StagedReflection, archiveReflection, writeStagedReflection } from "./staging";
+import { replaceShrinkError } from "./tool-executor";
 
 // Meta file paths
 const LAST_REFLECTION_PATH = "memory/meta/last-reflection.json";
@@ -65,12 +66,18 @@ export interface ReflectionResult {
 	/** Issues the model flagged but didn't propose an edit for. Surfaced in
 	 * the gchat card so the human can act on them. */
 	flaggedIssues?: FlaggedIssueSummary[];
+	/** True if a phase ran out of turns. An empty result then proves nothing. */
+	incomplete?: boolean;
 }
 
 /**
  * Run the daily reflection
  */
-export async function runReflection(env: Env): Promise<ReflectionResult> {
+export async function runReflection(
+	env: Env,
+	options?: { dryRun?: boolean },
+): Promise<ReflectionResult> {
+	const dryRun = options?.dryRun ?? false;
 	const date = new Date().toISOString().split("T")[0];
 	const storage = createR2Storage(env.MEMORY_BUCKET);
 
@@ -79,6 +86,12 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 
 	try {
 		let result: ReflectionResult;
+
+		if (dryRun) {
+			// Nothing is written and nobody is notified: the run is for looking
+			// at what reflection would do.
+			return await runAgenticDryRun(env, storage, date);
+		}
 
 		if (useAgentic) {
 			result = await runAgenticReflectionFlow(env, storage, date);
@@ -95,6 +108,7 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 				success: result.success,
 				autoApplied: result.autoApplied ?? 0,
 				proposed: result.proposed ?? 0,
+				incomplete: result.incomplete ?? false,
 				error: result.error,
 			}),
 		);
@@ -109,6 +123,7 @@ export async function runReflection(env: Env): Promise<ReflectionResult> {
 					edits: result.edits,
 					failedEdits: result.failedEdits,
 					flaggedIssues: result.flaggedIssues,
+					incomplete: result.incomplete,
 				},
 			);
 			await sendChatNotification(env.CHAT_WEBHOOK_AUTH_KEY, result.summary ?? "", {
@@ -160,6 +175,40 @@ function requireIndexedWrite(path: string, result: IndexWriteResult): void {
 }
 
 /**
+ * Run the agentic phases without writing anything, and report what would
+ * have happened. Proposed edits are listed, not applied.
+ */
+async function runAgenticDryRun(
+	env: Env,
+	storage: R2Storage,
+	date: string,
+): Promise<ReflectionResult> {
+	const r = await runAgenticReflection(env, storage, { dryRun: true });
+	const incomplete = r.deepAnalysisFinished === false || r.quickScanFinished === false;
+	return {
+		success: r.success,
+		date,
+		mode: "agentic",
+		incomplete,
+		summary: `[dry run] quick scan ${r.quickScanIterations} turns${r.quickScanFinished ? "" : " (unfinished)"}, deep analysis ${r.deepAnalysisIterations} turns${r.deepAnalysisFinished ? "" : " (unfinished)"}. Would apply ${r.autoAppliedFixes.length} quick fixes and ${r.proposedEdits.length} edits; flagged ${r.flaggedIssues.length}.\n\n${r.summary}`,
+		autoApplied: 0,
+		proposed: r.proposedEdits.length,
+		quickFixes: r.autoAppliedFixes.map((f) => ({
+			path: f.path,
+			action: f.fixType,
+			reason: f.reason,
+		})),
+		edits: r.proposedEdits.map((e) => ({
+			path: e.path,
+			action: e.action,
+			reason: `${e.reason} [content: ${e.content?.length ?? 0} chars]`,
+		})),
+		flaggedIssues: r.flaggedIssues.map((f) => ({ path: f.path, issue: f.issue })),
+		error: r.error,
+	};
+}
+
+/**
  * Run agentic reflection with tool calling
  */
 async function runAgenticReflectionFlow(
@@ -191,7 +240,22 @@ async function runAgenticReflectionFlow(
 		try {
 			switch (edit.action) {
 				case "replace":
-				case "create":
+				case "create": {
+					// Defence in depth: the propose step already refuses a replace
+					// that drops most of a file, but proposals can also arrive from
+					// persisted records. Re-check against the file as it is now.
+					if (edit.action === "replace") {
+						const current = await storage.read(edit.path);
+						const shrink = replaceShrinkError(edit, current?.content);
+						if (shrink) {
+							refusedEdits.push({
+								path: edit.path,
+								action: edit.action,
+								reason: `REFUSED (${shrink}): ${edit.reason}`,
+							});
+							continue;
+						}
+					}
 					if (edit.content) {
 						const result = await indexWrite(env, storage, edit.path, edit.content, {
 							detectOverlaps: false,
@@ -199,6 +263,7 @@ async function runAgenticReflectionFlow(
 						requireIndexedWrite(edit.path, result);
 					}
 					break;
+				}
 				case "append":
 					if (edit.content) {
 						const existing = await storage.read(edit.path);
@@ -257,11 +322,16 @@ async function runAgenticReflectionFlow(
 			...agenticResult.flaggedIssues,
 			...refusedEdits.map((e) => ({
 				path: e.path,
-				issue: `Reflection proposed deleting this file and was refused: ${e.reason}`,
+				issue:
+					e.action === "delete"
+						? `Reflection proposed deleting this file and was refused: ${e.reason}`
+						: `Reflection proposed a rewrite of this file and was refused: ${e.reason}`,
 			})),
 		],
 		quickScanIterations: agenticResult.quickScanIterations,
 		deepAnalysisIterations: agenticResult.deepAnalysisIterations,
+		quickScanFinished: agenticResult.quickScanFinished,
+		deepAnalysisFinished: agenticResult.deepAnalysisFinished,
 	};
 	// Write to pending first, then archive (reuses existing staging logic)
 	const pendingPath = await writeStagedReflection(storage, stagedReflection);
@@ -294,10 +364,29 @@ async function runAgenticReflectionFlow(
 		reason: f.reason,
 	}));
 
-	// Build a detailed summary
+	// Build a detailed summary.
+	//
+	// "Looks good" is only honest if deep analysis actually finished. For
+	// months every run hit its turn cap with nothing recorded and this branch
+	// reported a clean bill of health; running out of turns is now said out
+	// loud.
+	const incomplete =
+		agenticResult.deepAnalysisFinished === false || agenticResult.quickScanFinished === false;
 	let summary: string;
-	if (!hasChanges && !hasFlagged) {
+	if (!hasChanges && !hasFlagged && incomplete) {
+		const phases: string[] = [];
+		if (agenticResult.quickScanFinished === false) {
+			phases.push(`quick scan stopped after ${agenticResult.quickScanIterations} turns`);
+		}
+		if (agenticResult.deepAnalysisFinished === false) {
+			phases.push(`deep analysis stopped after ${agenticResult.deepAnalysisIterations} turns`);
+		}
+		summary = `Reflection did not finish: ${phases.join(" and ")} without reaching a conclusion. Nothing was changed or flagged. This is not a sign that memory is fine.`;
+	} else if (!hasChanges && !hasFlagged) {
 		summary = "Memory looks good — no issues found.";
+		if (agenticResult.summary) {
+			summary += `\n\n${agenticResult.summary}`;
+		}
 	} else if (!hasChanges && hasFlagged) {
 		// Findings exist but the model didn't propose any structural edits.
 		// Surface the count so the human knows to look at the card.
@@ -331,6 +420,7 @@ async function runAgenticReflectionFlow(
 		success: agenticResult.success && failedEdits.length === 0,
 		date,
 		summary,
+		incomplete,
 		mode: "agentic",
 		autoApplied: quickFixes.length + appliedEdits.length,
 		proposed: 0, // Nothing left pending — all auto-applied
@@ -341,7 +431,10 @@ async function runAgenticReflectionFlow(
 			...agenticResult.flaggedIssues.map((f) => ({ path: f.path, issue: f.issue })),
 			...refusedEdits.map((e) => ({
 				path: e.path,
-				issue: `Reflection proposed deleting this file and was refused: ${e.reason}`,
+				issue:
+					e.action === "delete"
+						? `Reflection proposed deleting this file and was refused: ${e.reason}`
+						: `Reflection proposed a rewrite of this file and was refused: ${e.reason}`,
 			})),
 		],
 		error:

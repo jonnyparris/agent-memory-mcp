@@ -89,4 +89,48 @@ describe("reflection write consistency", () => {
 		);
 		expect(JSON.parse(archivedJson?.content ?? "{}").failedEdits).toEqual(result.failedEdits);
 	});
+
+	it("does not call a run that ran out of turns 'looks good'", async () => {
+		mocks.runAgenticReflection.mockResolvedValue({
+			success: true,
+			summary: "Deep analysis ran out of turns",
+			proposedEdits: [],
+			autoAppliedFixes: [],
+			flaggedIssues: [],
+			writeFailures: [],
+			quickScanIterations: 12,
+			deepAnalysisIterations: 25,
+			quickScanFinished: false,
+			deepAnalysisFinished: false,
+		});
+
+		const result = await runReflection({
+			MEMORY_BUCKET: {},
+			USE_AGENTIC_REFLECTION: "true",
+		} as never);
+
+		expect(result.incomplete).toBe(true);
+		expect(result.summary).not.toContain("looks good");
+		expect(result.summary).toContain("did not finish");
+		expect(result.summary).toContain("after 25 turns");
+	});
+
+	it("refuses a replace that would gut the file at apply time", async () => {
+		await mocks.storage?.write("memory/learnings.md", "x".repeat(10000));
+		mocks.indexWrite.mockResolvedValue({ success: true, tags: [], links: [] });
+
+		const result = await runReflection({
+			MEMORY_BUCKET: {},
+			USE_AGENTIC_REFLECTION: "true",
+		} as never);
+
+		expect(mocks.indexWrite).not.toHaveBeenCalled();
+		expect((await mocks.storage?.read("memory/learnings.md"))?.content).toBe("x".repeat(10000));
+		expect(result.flaggedIssues).toEqual([
+			expect.objectContaining({
+				path: "memory/learnings.md",
+				issue: expect.stringContaining("rewrite of this file and was refused"),
+			}),
+		]);
+	});
 });
