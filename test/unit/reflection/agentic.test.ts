@@ -19,7 +19,6 @@ vi.mock("../../../src/llm/workers-ai", () => ({
 import { WorkersAIProvider } from "../../../src/llm/workers-ai";
 import {
 	MAX_DEEP_ANALYSIS_ITERATIONS,
-	MAX_QUICK_SCAN_ITERATIONS,
 	compactHistory,
 	runAgenticReflection,
 	runDeepAnalysisOnly,
@@ -54,7 +53,7 @@ describe("runAgenticReflection", () => {
 			AI: {} as any,
 			MEMORY_AUTH_TOKEN: "test-token",
 			REFLECTION_MODEL: "@cf/moonshotai/kimi-k2.6",
-			REFLECTION_MODEL_FAST: "@cf/zai-org/glm-4.7-flash",
+			REFLECTION_HYGIENE: "false",
 		};
 
 		// Get the mock complete function
@@ -69,20 +68,7 @@ describe("runAgenticReflection", () => {
 		);
 	});
 
-	it("should complete reflection with finishQuickScan and finishReflection", async () => {
-		// Quick scan finishes immediately
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Quick scan complete",
-			toolCalls: [
-				{
-					id: "call_test",
-					name: "finishQuickScan",
-					arguments: { autoApplied: 0, flaggedForDeepAnalysis: 0 },
-				},
-			],
-		});
-
-		// Deep analysis finishes immediately
+	it("should complete reflection with finishReflection", async () => {
 		mockLLMComplete.mockResolvedValueOnce({
 			response: "Deep analysis complete",
 			toolCalls: [
@@ -102,55 +88,32 @@ describe("runAgenticReflection", () => {
 
 		expect(result.success).toBe(true);
 		expect(result.summary).toBe("Memory is in good shape");
-		expect(result.quickScanIterations).toBeGreaterThan(0);
-		expect(result.deepAnalysisIterations).toBeGreaterThan(0);
+		expect(result.deepAnalysisIterations).toBe(1);
+		expect(result.deepAnalysisFinished).toBe(true);
+		expect(result.focus.id).toBeTruthy();
 	});
 
-	it("should preserve call metadata across a multi-turn quick scan", async () => {
+	it("should preserve call metadata across turns", async () => {
 		// First turn has no prose: the old `if (result.response)` guard dropped
 		// this assistant turn entirely, including its tool call.
 		mockLLMComplete.mockResolvedValueOnce({
 			response: "",
-			toolCalls: [
-				{
-					id: "call_list",
-					name: "listFiles",
-					arguments: { path: "memory", recursive: true },
-				},
-			],
+			toolCalls: [{ id: "call_list", name: "listFiles", arguments: { path: "memory" } }],
 		});
-
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Done scanning",
-			toolCalls: [
-				{
-					id: "call_finish_quick",
-					name: "finishQuickScan",
-					arguments: { autoApplied: 0, flaggedForDeepAnalysis: 0 },
-				},
-			],
-		});
-
 		mockLLMComplete.mockResolvedValueOnce({
 			response: "Deep analysis",
 			toolCalls: [
 				{
 					id: "call_finish_deep",
 					name: "finishReflection",
-					arguments: {
-						summary: "Scanned files, no issues found",
-						proposedChanges: 0,
-						autoApplied: 0,
-					},
+					arguments: { summary: "No issues", proposedChanges: 0, autoApplied: 0 },
 				},
 			],
 		});
 
 		const result = await runAgenticReflection(mockEnv, mockStorage);
 
-		expect(result.success).toBe(true);
-		expect(result.quickScanIterations).toBe(2);
-
+		expect(result.deepAnalysisIterations).toBe(2);
 		const secondTurnMessages = mockLLMComplete.mock.calls[1][0];
 		expect(secondTurnMessages).toEqual(
 			expect.arrayContaining([
@@ -159,78 +122,32 @@ describe("runAgenticReflection", () => {
 					content: "",
 					tool_calls: [expect.objectContaining({ id: "call_list", name: "listFiles" })],
 				}),
-				expect.objectContaining({
-					role: "tool",
-					tool_call_id: "call_list",
-				}),
+				expect.objectContaining({ role: "tool", tool_call_id: "call_list" }),
 			]),
 		);
 	});
 
-	it("should pass flagged issues from quick scan to deep analysis", async () => {
-		// Quick scan flags an issue
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Found complex issue",
-			toolCalls: [
-				{
-					id: "call_test",
-					name: "flagForDeepAnalysis",
-					arguments: {
-						path: "memory/learnings.md",
-						issue: "Contains outdated model information",
-					},
-				},
-			],
+	it("puts tonight's focus in the first prompt and scopes the inventory to it", async () => {
+		mockStorage._files.set("memory/workload/plans/old-plan.md", {
+			content: "# Old plan",
+			updated_at: "2026-01-01T00:00:00Z",
 		});
+		mockLLMComplete.mockResolvedValue({ response: "done", toolCalls: undefined });
 
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Done",
-			toolCalls: [
-				{
-					id: "call_test",
-					name: "finishQuickScan",
-					arguments: { autoApplied: 0, flaggedForDeepAnalysis: 1 },
-				},
-			],
-		});
+		const result = await runAgenticReflection(mockEnv, mockStorage, { focus: "plans" });
 
-		// Deep analysis should receive the flagged issue
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Analyzing flagged issue",
-			toolCalls: [
-				{
-					id: "call_test",
-					name: "proposeEdit",
-					arguments: {
-						path: "memory/learnings.md",
-						action: "replace",
-						content: "# Updated Learnings\n\n- Current info",
-						reason: "Updated outdated model information",
-					},
-				},
-			],
-		});
+		const prompt = mockLLMComplete.mock.calls[0][0][0].content as string;
+		expect(result.focus.id).toBe("plans");
+		expect(prompt).toContain("Stale plans and workload");
+		expect(prompt).toContain("memory/workload/plans/old-plan.md");
+		expect(prompt).not.toContain("memory/learnings.md");
+	});
 
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Done",
-			toolCalls: [
-				{
-					id: "call_test",
-					name: "finishReflection",
-					arguments: {
-						summary: "Fixed outdated information",
-						proposedChanges: 1,
-						autoApplied: 0,
-					},
-				},
-			],
-		});
-
-		const result = await runAgenticReflection(mockEnv, mockStorage);
-
-		expect(result.success).toBe(true);
-		expect(result.flaggedIssues).toHaveLength(1);
-		expect(result.proposedEdits).toHaveLength(1);
+	it("uses the model override", async () => {
+		mockLLMComplete.mockResolvedValue({ response: "done", toolCalls: undefined });
+		const result = await runAgenticReflection(mockEnv, mockStorage, { model: "@cf/test/model" });
+		expect(result.model).toBe("@cf/test/model");
+		expect(vi.mocked(WorkersAIProvider)).toHaveBeenLastCalledWith(mockEnv.AI, "@cf/test/model");
 	});
 
 	it("should respect iteration limits", async () => {
@@ -248,24 +165,20 @@ describe("runAgenticReflection", () => {
 
 		const result = await runAgenticReflection(mockEnv, mockStorage);
 
-		// Stops at the caps, and says it ran out of turns rather than finishing.
+		// Stops at the cap, and says it ran out of turns rather than finishing.
 		expect(result.success).toBe(true);
-		expect(result.quickScanIterations).toBe(MAX_QUICK_SCAN_ITERATIONS);
 		expect(result.deepAnalysisIterations).toBe(MAX_DEEP_ANALYSIS_ITERATIONS);
-		expect(result.quickScanFinished).toBe(false);
 		expect(result.deepAnalysisFinished).toBe(false);
 		expect(result.summary).toContain("ran out of turns");
 	});
 
-	it("hands both phases a file inventory so they don't spend a turn listing", async () => {
+	it("hands the model a file inventory so it doesn't spend a turn listing", async () => {
 		mockLLMComplete.mockResolvedValue({ response: "done", toolCalls: undefined });
 
-		await runAgenticReflection(mockEnv, mockStorage);
+		await runAgenticReflection(mockEnv, mockStorage, { focus: "orphans" });
 
-		const quickPrompt = mockLLMComplete.mock.calls[0][0][0].content as string;
-		const deepPrompt = mockLLMComplete.mock.calls[1][0][0].content as string;
-		expect(quickPrompt).toContain("memory/learnings.md");
-		expect(deepPrompt).toContain("memory/learnings.md");
+		const prompt = mockLLMComplete.mock.calls[0][0][0].content as string;
+		expect(prompt).toContain("memory/learnings.md");
 	});
 
 	it("warns near the end of the budget and narrows tools on the final turn", async () => {
@@ -344,13 +257,7 @@ describe("runAgenticReflection", () => {
 	});
 
 	it("should handle LLM response with no tool calls", async () => {
-		// Quick scan - no tool calls means done
-		mockLLMComplete.mockResolvedValueOnce({
-			response: "Everything looks fine",
-			toolCalls: undefined,
-		});
-
-		// Deep analysis - no tool calls means done
+		// A text answer with no tool calls means done
 		mockLLMComplete.mockResolvedValueOnce({
 			response: "Memory is well organized",
 			toolCalls: undefined,
@@ -398,7 +305,7 @@ describe("runDeepAnalysisOnly", () => {
 		);
 	});
 
-	it("should skip quick scan and run only deep analysis", async () => {
+	it("runs deep analysis without hygiene", async () => {
 		mockLLMComplete.mockResolvedValueOnce({
 			response: "Deep analysis only",
 			toolCalls: [
@@ -417,7 +324,6 @@ describe("runDeepAnalysisOnly", () => {
 		const result = await runDeepAnalysisOnly(mockEnv, mockStorage);
 
 		expect(result.success).toBe(true);
-		expect(result.quickScanIterations).toBe(0); // Skipped
 		expect(result.deepAnalysisIterations).toBeGreaterThan(0);
 	});
 });

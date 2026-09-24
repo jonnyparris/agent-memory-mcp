@@ -1,15 +1,23 @@
 /**
  * Agentic Reflection Runner
  *
- * Implements the two-tier reflection architecture:
- * - Phase A: Quick Scan (GLM Flash) - auto-applies low-risk fixes
- * - Phase B: Deep Analysis (Gemma 4 by default) - proposes substantive changes
+ * Two steps:
+ * 1. Hygiene: deterministic whitespace tidy (no model). See hygiene.ts.
+ * 2. Deep analysis: one model, one focus per night (see focus.ts), with a
+ *    turn budget, checkpoint nudges, and honest reporting when it doesn't
+ *    finish.
+ *
+ * An LLM "quick scan" used to run first. It spent up to 12 turns a night
+ * looking for whitespace problems and never applied a fix; hygiene.ts does
+ * that job with code.
  */
 
 import type { LLMCompletionResult, LLMMessage, LLMTool, LLMToolCall } from "../llm/types";
 import { REFLECTION_MODELS, WorkersAIProvider } from "../llm/workers-ai";
 import type { R2Storage } from "../storage/r2";
 import type { Env } from "../types";
+import { type ReflectionFocus, focusForDate, inFocus } from "./focus";
+import { runHygiene } from "./hygiene";
 import {
 	type AutoAppliedFix,
 	type FlaggedIssue,
@@ -19,108 +27,65 @@ import {
 	createExecutionContext,
 	executeReflectionTool,
 } from "./tool-executor";
-import { QUICK_SCAN_TOOLS, REFLECTION_TOOLS } from "./tools";
+import { REFLECTION_TOOLS } from "./tools";
 
 /**
- * Turn budget for each phase.
+ * Turn budget for deep analysis.
  *
- * The old caps (5 and 10) were never reached with work done: a real run spent
- * all five quick-scan turns reading 15 of 33 files, and all ten deep-analysis
- * turns reading files and checking backlinks one call at a time. Neither phase
- * ever called its finish tool, nothing was proposed, and the run was reported
- * as "Memory looks good". A full run at these caps is still only a few minutes
- * of wall time, well inside the 15-minute limit for a cron-triggered Worker.
+ * The old cap of 10 was always reached with nothing done: the model read
+ * files one call at a time and never called finishReflection. A full run at
+ * 25 is a few minutes of wall time, well inside the 15-minute limit for a
+ * cron-triggered Worker.
  */
-export const MAX_QUICK_SCAN_ITERATIONS = 12;
 export const MAX_DEEP_ANALYSIS_ITERATIONS = 25;
 
 /** When this many turns are left, tell the model to stop exploring and report. */
 const WRAP_UP_TURNS = 3;
 
 /**
- * Rough ceiling on accumulated message characters per phase (~4 chars per
- * token). Past this, the oldest tool results are shortened so the history
- * stays inside the model's context window. GLM 4.7 Flash has 131k tokens,
- * Gemma 4 has 256k.
+ * Rough ceiling on accumulated message characters (~4 chars per token). Past
+ * this, the oldest tool results are shortened so the history stays inside the
+ * model's context window.
  */
-const QUICK_SCAN_CONTEXT_CHARS = 240_000;
-const DEEP_ANALYSIS_CONTEXT_CHARS = 480_000;
+const DEEP_ANALYSIS_CONTEXT_CHARS = 400_000;
 
-/** Empty responses (no text, no tool call) tolerated before the phase gives up. */
+/** Empty responses (no text, no tool call) tolerated before giving up. */
 const MAX_EMPTY_STOPS = 2;
 
 /** Tools the model may still use on its final turn. */
-const QUICK_SCAN_FINAL_TOOLS = new Set(["autoApply", "flagForDeepAnalysis", "finishQuickScan"]);
 const DEEP_ANALYSIS_FINAL_TOOLS = new Set(["proposeEdit", "flagIssue", "finishReflection"]);
 
-/** System prompts for each phase */
-const QUICK_SCAN_SYSTEM_PROMPT = `You are a quick-scan agent checking memory files for simple issues.
+const DEEP_ANALYSIS_SYSTEM_PROMPT = `You are an AI agent reviewing a personal memory store: markdown notes an engineering manager's coding agents read and write.
 
-Your task is to:
-1. List files in the memory directory
-2. Read files and check for: typos, formatting issues, trailing whitespace, missing newlines, exact duplicates
-3. Auto-apply safe fixes immediately using the autoApply tool
-4. Flag complex issues (contradictions, outdated info, semantic duplicates) for deep analysis
+Layout (typical):
+- memory/learnings*.md, memory/learnings/: technical lessons and gotchas
+- memory/preferences.md, memory/soul.md: how the agent should behave
+- memory/projects.md, memory/projects/: projects
+- memory/people.md, memory/people/: people
+- memory/patterns/, memory/reference/: reusable knowledge
+- memory/workload/: todos and plans
 
-Rules:
-- ONLY auto-apply fixes you are 100% certain about
-- Never auto-apply changes to code blocks
-- Never auto-apply changes that alter meaning
-- When in doubt, flag for deep analysis instead
-- Be efficient - scan systematically, don't re-read files
-- You have a limited number of turns. Read several files per turn
-- Large files come back in pages. You don't need to page through everything;
-  flag a large file for deep analysis if it looks disorganised
+Files link with Obsidian wikilinks: [[path/to/file]] or [[file|text]].
+getBacklinks shows which files link to a file.
 
-Call finishQuickScan when done.`;
+Each night has ONE focus, given in the first message. Stay on it.
 
-const DEEP_ANALYSIS_SYSTEM_PROMPT = `You are an AI agent performing deep reflection on your memory system.
+How to work:
+- Make several tool calls per turn (read 3-5 files at once).
+- Record findings as you go. An unrecorded finding is lost.
+- flagIssue: a problem for the human, with the fix you recommend. Quote the
+  lines you mean. This is the default way to report.
+- proposeEdit: applied automatically after the run, with no review. Use it
+  for small, safe changes, mainly append (a "See also" link, a "superseded
+  by" note). replace overwrites the WHOLE file; only use it on a file you
+  have read completely. A replace that drops over 30% of a file is refused.
+- Report only what the files show now. Notes about past incidents that were
+  fixed are history, not current problems.
+- One flag per problem. If several files share it, flag once and list them.
+- If you find nothing wrong within the focus, call finishReflection and say
+  what you checked. That is a fine result.
 
-Your memory contains:
-- memory/learnings.md: Technical lessons and gotchas
-- memory/preferences.md: Communication and code style preferences
-- memory/projects.md: Active and past projects
-- memory/patterns/: Reusable code patterns and knowledge
-- memory/workload/: Work tracking, todos, and plans
-
-Memory files can reference each other using Obsidian-style wikilinks:
-[[path/to/other-file]] or [[path|display text]]. These are indexed as
-backlinks — use the getBacklinks tool to see which files reference a
-target. High backlink count means the file is a hub; zero backlinks
-on a non-leaf file often means it's orphaned.
-
-Your task is to:
-1. Search memory to understand what's there
-2. Identify issues: contradictions, outdated info, gaps, semantic
-   duplicates, orphaned files, and missing cross-references
-3. Fix what you can with proposeEdit, and record the rest with flagIssue
-4. Be specific - if you find an issue, write the exact fix or the exact problem
-
-Rules:
-- proposeEdit changes are applied automatically after the run. Be careful:
-  prefer append for additions, and only use replace when you have read the
-  whole file and your content is the complete new file
-- Use flagIssue for anything too large or risky to write as an edit. A
-  flagged issue is shown to the human; an unrecorded finding is lost
-- You have a limited number of turns. Make several tool calls per turn
-  (for example, read 3-5 files at once) instead of one at a time
-- Do not spend the whole budget reading. Record findings as you go
-- Report only what the files show now. Memory often describes past
-  incidents and how they were fixed; a note like "restored after a bad
-  write" is history, not a current problem. If you suspect damage, say
-  what you saw in the file (quote it), not what you infer
-- One flag per problem. If several files share a problem, flag it once
-  and list the files in the issue text
-- Focus on substantive improvements, not formatting (quick scan handles that)
-- If issues were flagged from quick scan, analyze them first
-- Use searchMemory to find related content before proposing merges
-- Use getBacklinks before proposing deletion or merge of a referenced file
-- When two files clearly relate but don't link, propose a proposeEdit that
-  adds a [[wikilink]] in the natural spot. Favour a short "See also"
-  section over inline links unless the flow reads naturally.
-- Be specific in your reasons - explain what's wrong and why
-
-Call finishReflection when done.`;
+Call finishReflection with a 2-3 sentence summary when done.`;
 
 /**
  * Result of the agentic reflection process
@@ -129,64 +94,73 @@ export interface AgenticReflectionResult {
 	success: boolean;
 	summary: string;
 	proposedEdits: ProposedEdit[];
+	/** Hygiene fixes plus any autoApply fixes the model made. */
 	autoAppliedFixes: AutoAppliedFix[];
-	quickScanIterations: number;
 	deepAnalysisIterations: number;
 	flaggedIssues: FlaggedIssue[];
 	/** Storage writes that landed but failed to update the search index. */
 	writeFailures: string[];
-	/** True if the quick scan called finishQuickScan (or stopped on its own). */
-	quickScanFinished: boolean;
-	/** True if deep analysis called finishReflection (or stopped on its own).
-	 *  False means it ran out of turns, so an empty result proves nothing. */
+	/** True if deep analysis called finishReflection (or stopped with an answer).
+	 *  False means it ran out of turns or went silent, so an empty result
+	 *  proves nothing. */
 	deepAnalysisFinished: boolean;
+	/** Tonight's focus. */
+	focus: { id: string; title: string };
+	/** Model used for deep analysis. */
+	model: string;
 	error?: string;
 }
 
+export interface ReflectionRunOptions {
+	dryRun?: boolean;
+	/** Force a focus id instead of the weekday rotation. */
+	focus?: string;
+	/** Override the deep-analysis model (for evaluating models with dry runs). */
+	model?: string;
+	/** Skip the hygiene step. */
+	skipHygiene?: boolean;
+	/** Date used to pick the focus. Defaults to now. */
+	now?: Date;
+}
+
 /**
- * Run the full agentic reflection (both phases)
+ * Run hygiene, then deep analysis on tonight's focus.
  */
 export async function runAgenticReflection(
 	env: Env,
 	storage: R2Storage,
-	options?: { dryRun?: boolean },
+	options: ReflectionRunOptions = {},
 ): Promise<AgenticReflectionResult> {
-	const context = createExecutionContext(storage, env, options);
-	const inventory = await buildInventory(storage);
+	const context = createExecutionContext(storage, env, { dryRun: options.dryRun });
+	const focus = focusForDate(options.now ?? new Date(), options.focus ?? env.REFLECTION_FOCUS);
+	const model = options.model ?? env.REFLECTION_MODEL ?? REFLECTION_MODELS.primary;
 
-	// Phase A: Quick Scan
-	const quickScanResult = await runQuickScan(env, context, inventory);
-	if (!quickScanResult.success) {
-		return {
-			success: false,
-			summary: `Quick scan failed: ${quickScanResult.error}`,
-			proposedEdits: [],
-			autoAppliedFixes: context.autoAppliedFixes,
-			quickScanIterations: quickScanResult.iterations,
-			deepAnalysisIterations: 0,
-			flaggedIssues: context.flaggedIssues,
-			writeFailures: context.writeFailures,
-			quickScanFinished: false,
-			deepAnalysisFinished: false,
-			error: quickScanResult.error,
-		};
+	if (!options.skipHygiene && env.REFLECTION_HYGIENE !== "false") {
+		try {
+			const hygiene = await runHygiene(env, storage, { dryRun: options.dryRun });
+			context.autoAppliedFixes.push(...hygiene.fixes);
+			context.writeFailures.push(...hygiene.failures);
+		} catch (e) {
+			// Hygiene is a nicety. Never let it stop the analysis.
+			console.error(JSON.stringify({ event: "hygiene_failed", error: String(e) }));
+		}
 	}
 
-	// Phase B: Deep Analysis
-	const deepAnalysisResult = await runDeepAnalysis(env, context, inventory);
+	const inventory = await buildInventory(storage, focus);
+	const deep = await runDeepAnalysis(env, context, inventory, focus, model);
 
 	return {
-		success: deepAnalysisResult.success,
-		summary: deepAnalysisResult.summary,
+		success: deep.success,
+		summary: deep.summary,
 		proposedEdits: context.proposedEdits,
 		autoAppliedFixes: context.autoAppliedFixes,
-		quickScanIterations: quickScanResult.iterations,
-		deepAnalysisIterations: deepAnalysisResult.iterations,
+		deepAnalysisIterations: deep.iterations,
 		flaggedIssues: context.flaggedIssues,
 		writeFailures: context.writeFailures,
-		quickScanFinished: quickScanResult.finished,
-		deepAnalysisFinished: deepAnalysisResult.finished,
-		error: deepAnalysisResult.error,
+		deepAnalysisFinished: deep.finished,
+		focus: { id: focus.id, title: focus.title },
+		model,
+		error: deep.error,
 	};
 }
 
@@ -196,12 +170,12 @@ const INVENTORY_MAX_FILES = 200;
 /**
  * List every memory file up front, with size and last-updated date.
  *
- * Both phases used to start by calling listFiles, costing a turn each, and the
- * quick scan only listed the top level. Handing the model the inventory lets
+ * The model used to start by calling listFiles, costing a turn. Handing it
+ * the inventory (limited to tonight's focus) lets
  * it spend its turns reading and deciding, and the sizes tell it which files
  * will need paging.
  */
-export async function buildInventory(storage: R2Storage): Promise<string> {
+export async function buildInventory(storage: R2Storage, focus?: ReflectionFocus): Promise<string> {
 	let files: Awaited<ReturnType<R2Storage["list"]>>;
 	try {
 		files = await storage.list("memory", true);
@@ -210,6 +184,7 @@ export async function buildInventory(storage: R2Storage): Promise<string> {
 	}
 	const relevant = files
 		.filter((f) => !f.path.endsWith("/") && !f.path.startsWith("memory/reflections/"))
+		.filter((f) => !focus || inFocus(focus, f.path))
 		.sort((a, b) => a.path.localeCompare(b.path));
 	if (relevant.length === 0) return "";
 
@@ -219,7 +194,8 @@ export async function buildInventory(storage: R2Storage): Promise<string> {
 	if (relevant.length > INVENTORY_MAX_FILES) {
 		lines.push(`- ...and ${relevant.length - INVENTORY_MAX_FILES} more (use listFiles)`);
 	}
-	return `Memory files (${relevant.length}):\n${lines.join("\n")}`;
+	const scope = focus && focus.paths.length > 0 ? " in scope for tonight's focus" : "";
+	return `Memory files${scope} (${relevant.length}):\n${lines.join("\n")}`;
 }
 
 /** Preserve the call/result pairing in accumulated conversation history. */
@@ -277,7 +253,7 @@ function budgetNudge(remaining: number, finishTool: string, recordTools: string)
 }
 
 interface PhaseConfig {
-	phase: "quick_scan" | "deep_analysis";
+	phase: "deep_analysis";
 	model: string;
 	systemPrompt: string;
 	initialPrompt: string;
@@ -341,7 +317,7 @@ async function runPhase(
 				success: false,
 				iterations,
 				finished: false,
-				error: `${config.phase === "quick_scan" ? "Quick scan" : "Deep analysis"} error: ${e instanceof Error ? e.message : String(e)}`,
+				error: `Deep analysis error: ${e instanceof Error ? e.message : String(e)}`,
 			};
 		}
 
@@ -428,46 +404,14 @@ async function runPhase(
 }
 
 /**
- * Phase A: Quick Scan with GLM Flash
- */
-async function runQuickScan(
-	env: Env,
-	context: ToolExecutionContext,
-	inventory: string,
-): Promise<{ success: boolean; iterations: number; finished: boolean; error?: string }> {
-	let initialPrompt = `Begin quick scan. Read memory files and auto-apply any safe fixes you find. Flag complex issues for deep analysis. You have ${MAX_QUICK_SCAN_ITERATIONS} turns; read several files per turn.`;
-	if (inventory) initialPrompt += `\n\n${inventory}`;
-
-	const result = await runPhase(env, context, {
-		phase: "quick_scan",
-		model: env.REFLECTION_MODEL_FAST ?? REFLECTION_MODELS.fast,
-		systemPrompt: QUICK_SCAN_SYSTEM_PROMPT,
-		initialPrompt,
-		tools: QUICK_SCAN_TOOLS,
-		finalTools: QUICK_SCAN_FINAL_TOOLS,
-		finishTool: "finishQuickScan",
-		recordTools: "autoApply or flagForDeepAnalysis",
-		maxIterations: MAX_QUICK_SCAN_ITERATIONS,
-		maxContextChars: QUICK_SCAN_CONTEXT_CHARS,
-		maxTokens: 2048,
-		temperature: 0.3, // Lower temperature for more consistent quick fixes
-	});
-
-	return {
-		success: result.success,
-		iterations: result.iterations,
-		finished: result.finished,
-		error: result.error,
-	};
-}
-
-/**
- * Phase B: Deep Analysis
+ * Deep analysis on one focus.
  */
 async function runDeepAnalysis(
 	env: Env,
 	context: ToolExecutionContext,
 	inventory: string,
+	focus: ReflectionFocus,
+	model: string,
 ): Promise<{
 	success: boolean;
 	iterations: number;
@@ -475,33 +419,27 @@ async function runDeepAnalysis(
 	summary: string;
 	error?: string;
 }> {
-	// Build initial prompt including any flagged issues from quick scan
-	let initialPrompt = `Begin deep analysis of memory. Identify problems, fix what you can with proposeEdit, and record the rest with flagIssue. You have ${MAX_DEEP_ANALYSIS_ITERATIONS} turns; make several tool calls per turn and record findings as you go.`;
+	let initialPrompt = `Tonight's focus: ${focus.title}
+
+${focus.instructions}
+
+You have ${MAX_DEEP_ANALYSIS_ITERATIONS} turns. Make several tool calls per turn and record findings as you go.`;
 
 	if (inventory) initialPrompt += `\n\n${inventory}`;
 
-	if (context.flaggedIssues.length > 0) {
-		const flaggedList = context.flaggedIssues.map((f) => `- ${f.path}: ${f.issue}`).join("\n");
-		initialPrompt += `\n\nThe quick scan flagged these issues for deeper analysis:\n${flaggedList}\n\nPlease analyze these first. They are already shown to the human, so only flag them again if you have something to add.`;
-	}
-
-	if (context.autoAppliedFixes.length > 0) {
-		initialPrompt += `\n\nNote: Quick scan already auto-applied ${context.autoAppliedFixes.length} low-risk fixes.`;
-	}
-
 	const result = await runPhase(env, context, {
 		phase: "deep_analysis",
-		model: env.REFLECTION_MODEL ?? REFLECTION_MODELS.primary,
+		model,
 		systemPrompt: DEEP_ANALYSIS_SYSTEM_PROMPT,
 		initialPrompt,
 		tools: REFLECTION_TOOLS,
 		finalTools: DEEP_ANALYSIS_FINAL_TOOLS,
 		finishTool: "finishReflection",
-		recordTools: "proposeEdit or flagIssue",
+		recordTools: "flagIssue or proposeEdit",
 		maxIterations: MAX_DEEP_ANALYSIS_ITERATIONS,
 		maxContextChars: DEEP_ANALYSIS_CONTEXT_CHARS,
-		maxTokens: 4096,
-		temperature: 0.7,
+		maxTokens: 8192,
+		temperature: 0.4,
 	});
 
 	let summary = "";
@@ -531,28 +469,12 @@ async function runDeepAnalysis(
 }
 
 /**
- * Run only deep analysis (skip quick scan)
- * Useful for testing or when quick scan isn't needed
+ * Run only deep analysis (skip hygiene). Useful for tests.
  */
 export async function runDeepAnalysisOnly(
 	env: Env,
 	storage: R2Storage,
+	options: ReflectionRunOptions = {},
 ): Promise<AgenticReflectionResult> {
-	const context = createExecutionContext(storage, env);
-	const inventory = await buildInventory(storage);
-	const result = await runDeepAnalysis(env, context, inventory);
-
-	return {
-		success: result.success,
-		summary: result.summary,
-		proposedEdits: context.proposedEdits,
-		autoAppliedFixes: context.autoAppliedFixes,
-		quickScanIterations: 0,
-		deepAnalysisIterations: result.iterations,
-		flaggedIssues: context.flaggedIssues,
-		writeFailures: context.writeFailures,
-		quickScanFinished: true,
-		deepAnalysisFinished: result.finished,
-		error: result.error,
-	};
+	return runAgenticReflection(env, storage, { ...options, skipHygiene: true });
 }

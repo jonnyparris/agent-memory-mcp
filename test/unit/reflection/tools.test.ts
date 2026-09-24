@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { QUICK_SCAN_TOOLS, REFLECTION_TOOLS } from "../../../src/reflection/tools";
+import { REFLECTION_TOOLS } from "../../../src/reflection/tools";
 
 describe("REFLECTION_TOOLS", () => {
 	it("should have valid tool definitions", () => {
@@ -63,39 +63,9 @@ describe("REFLECTION_TOOLS", () => {
 	});
 });
 
-describe("QUICK_SCAN_TOOLS", () => {
-	it("should have valid tool definitions", () => {
-		for (const tool of QUICK_SCAN_TOOLS) {
-			expect(tool.name).toBeTruthy();
-			expect(tool.description).toBeTruthy();
-			expect(tool.parameters.type).toBe("object");
-		}
-	});
-
-	it("should have limited set of safe tools", () => {
-		const toolNames = QUICK_SCAN_TOOLS.map((t) => t.name);
-
-		// Should have these safe tools
-		expect(toolNames).toContain("listFiles");
-		expect(toolNames).toContain("readFile");
-		expect(toolNames).toContain("autoApply");
-		expect(toolNames).toContain("flagForDeepAnalysis");
-		expect(toolNames).toContain("finishQuickScan");
-
-		// Should NOT have proposeEdit or searchMemory (reserved for deep analysis)
-		expect(toolNames).not.toContain("proposeEdit");
-		expect(toolNames).not.toContain("searchMemory");
-	});
-
-	it("flagForDeepAnalysis should require path and issue", () => {
-		const tool = QUICK_SCAN_TOOLS.find((t) => t.name === "flagForDeepAnalysis");
-		expect(tool?.parameters.required).toContain("path");
-		expect(tool?.parameters.required).toContain("issue");
-	});
-
-	it("finishQuickScan should require counts", () => {
-		const tool = QUICK_SCAN_TOOLS.find((t) => t.name === "finishQuickScan");
-		expect(tool?.parameters.required).toContain("autoApplied");
-		expect(tool?.parameters.required).toContain("flaggedForDeepAnalysis");
+describe("flagIssue", () => {
+	it("is a deep-analysis tool that requires path and issue", () => {
+		const tool = REFLECTION_TOOLS.find((t) => t.name === "flagIssue");
+		expect(tool?.parameters.required).toEqual(["path", "issue"]);
 	});
 });

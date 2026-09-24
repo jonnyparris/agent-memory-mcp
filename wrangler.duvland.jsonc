@@ -51,7 +51,6 @@
 
 	"vars": {
 		"REFLECTION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
-		"REFLECTION_MODEL_FAST": "@cf/zai-org/glm-4.7-flash",
 		"USE_AGENTIC_REFLECTION": "true"
 	}
 }

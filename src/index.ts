@@ -6,7 +6,8 @@
  *   POST /reflect  — REST, auth required. Manually triggers a reflection
  *                    run. Returns a JSON ReflectionResult, NOT JSON-RPC.
  *                    Add ?dry_run=1 to see what it would do without writing
- *                    anything or sending the chat notification.
+ *                    anything or sending the chat notification. Dry runs
+ *                    also take ?focus=<id> and ?model=<workers-ai model>.
  *   ANY  /mcp      — MCP Streamable HTTP transport, auth required. Serves
  *                    the full MCP tool surface (read/write/search/etc).
  *                    All responses are JSON-RPC 2.0.
@@ -56,7 +57,13 @@ export default {
 			}
 
 			const dryRun = ["1", "true"].includes(url.searchParams.get("dry_run") ?? "");
-			const result = await runReflection(env, { dryRun });
+			// focus and model overrides are for evaluating prompts and models, so
+			// they only apply to dry runs. A real run always uses the rotation.
+			const result = await runReflection(env, {
+				dryRun,
+				focus: dryRun ? (url.searchParams.get("focus") ?? undefined) : undefined,
+				model: dryRun ? (url.searchParams.get("model") ?? undefined) : undefined,
+			});
 			return new Response(JSON.stringify(result, null, 2), {
 				headers: { "Content-Type": "application/json" },
 			});

@@ -5,9 +5,14 @@
  * - Agentic (default): Uses tool-calling LLMs for intelligent memory analysis
  * - Legacy: Falls back to single-shot LLM for prose suggestions
  *
- * The agentic mode runs in two phases:
- * 1. Quick Scan (GLM Flash): Auto-applies low-risk fixes
- * 2. Deep Analysis (Kimi K2.6): Proposes substantive changes for human review
+ * The agentic mode runs:
+ * 1. Hygiene: deterministic whitespace tidy (no model)
+ * 2. Deep analysis on one focus per night: edits (auto-applied, guarded)
+ *    and flagged issues for the human
+ *
+ * Notifications go out when there is something to act on (edits, flags,
+ * failures, an incomplete run), plus a weekly heartbeat. Three incomplete
+ * runs in a row raise an alert.
  */
 
 import { WorkersAIProvider } from "../llm/workers-ai";
@@ -21,7 +26,12 @@ import { type IndexWriteResult, indexWrite } from "../search/index-write";
 import type { R2Storage } from "../storage/r2";
 import { createR2Storage } from "../storage/r2";
 import type { Env, MemoryFileMetadata } from "../types";
-import { type AgenticReflectionResult, runAgenticReflection } from "./agentic";
+import {
+	type AgenticReflectionResult,
+	type ReflectionRunOptions,
+	runAgenticReflection,
+} from "./agentic";
+import { type RunRecord, decideNotification, recordRun } from "./run-history";
 import { type StagedReflection, archiveReflection, writeStagedReflection } from "./staging";
 import { replaceShrinkError } from "./tool-executor";
 
@@ -66,8 +76,14 @@ export interface ReflectionResult {
 	/** Issues the model flagged but didn't propose an edit for. Surfaced in
 	 * the gchat card so the human can act on them. */
 	flaggedIssues?: FlaggedIssueSummary[];
-	/** True if a phase ran out of turns. An empty result then proves nothing. */
+	/** True if deep analysis didn't finish. An empty result then proves nothing. */
 	incomplete?: boolean;
+	/** Tonight's focus, e.g. "Stale plans and workload". */
+	focus?: string;
+	/** Deep-analysis model. */
+	model?: string;
+	/** Whether a chat notification was sent, and why (or why not). */
+	notification?: { sent: boolean; reason: string };
 }
 
 /**
@@ -75,7 +91,7 @@ export interface ReflectionResult {
  */
 export async function runReflection(
 	env: Env,
-	options?: { dryRun?: boolean },
+	options?: Pick<ReflectionRunOptions, "dryRun" | "focus" | "model">,
 ): Promise<ReflectionResult> {
 	const dryRun = options?.dryRun ?? false;
 	const date = new Date().toISOString().split("T")[0];
@@ -90,7 +106,7 @@ export async function runReflection(
 		if (dryRun) {
 			// Nothing is written and nobody is notified: the run is for looking
 			// at what reflection would do.
-			return await runAgenticDryRun(env, storage, date);
+			return await runAgenticDryRun(env, storage, date, options ?? {});
 		}
 
 		if (useAgentic) {
@@ -113,8 +129,33 @@ export async function runReflection(
 			}),
 		);
 
-		// Always send a DM summary (if webhook configured)
-		if (env.CHAT_WEBHOOK_AUTH_KEY && env.CHAT_WEBHOOK_URL && env.CHAT_WEBHOOK_SPACE_ID) {
+		// Record the run, then decide whether it's worth a notification. A card
+		// every day that says the same thing trains the reader to ignore it,
+		// which is how months of empty runs went unnoticed.
+		const record: RunRecord = {
+			date,
+			focus: result.focus ?? "",
+			finished: !result.incomplete,
+			success: result.success,
+			edits: result.edits?.length ?? 0,
+			quickFixes: result.quickFixes?.length ?? 0,
+			flagged: result.flaggedIssues?.length ?? 0,
+			failed: result.failedEdits?.length ?? 0,
+		};
+		const history = await recordRun(storage, record);
+		const decision = decideNotification(record, history, new Date());
+		result.notification = { sent: false, reason: decision.reason };
+		if (decision.prefix) {
+			result.summary = `${decision.prefix}\n\n${result.summary ?? ""}`;
+		}
+
+		if (
+			decision.send &&
+			env.CHAT_WEBHOOK_AUTH_KEY &&
+			env.CHAT_WEBHOOK_URL &&
+			env.CHAT_WEBHOOK_SPACE_ID
+		) {
+			result.notification.sent = true;
 			const card = buildReflectionCard(
 				date,
 				result.summary ?? "Reflection complete — no issues found.",
@@ -182,15 +223,18 @@ async function runAgenticDryRun(
 	env: Env,
 	storage: R2Storage,
 	date: string,
+	options: Pick<ReflectionRunOptions, "focus" | "model">,
 ): Promise<ReflectionResult> {
-	const r = await runAgenticReflection(env, storage, { dryRun: true });
-	const incomplete = r.deepAnalysisFinished === false || r.quickScanFinished === false;
+	const r = await runAgenticReflection(env, storage, { ...options, dryRun: true });
+	const incomplete = r.deepAnalysisFinished === false;
 	return {
 		success: r.success,
 		date,
 		mode: "agentic",
 		incomplete,
-		summary: `[dry run] quick scan ${r.quickScanIterations} turns${r.quickScanFinished ? "" : " (unfinished)"}, deep analysis ${r.deepAnalysisIterations} turns${r.deepAnalysisFinished ? "" : " (unfinished)"}. Would apply ${r.autoAppliedFixes.length} quick fixes and ${r.proposedEdits.length} edits; flagged ${r.flaggedIssues.length}.\n\n${r.summary}`,
+		focus: r.focus.title,
+		model: r.model,
+		summary: `[dry run] focus "${r.focus.title}", model ${r.model}, ${r.deepAnalysisIterations} turns${r.deepAnalysisFinished ? "" : " (unfinished)"}. Would apply ${r.autoAppliedFixes.length} hygiene fixes and ${r.proposedEdits.length} edits; flagged ${r.flaggedIssues.length}.\n\n${r.summary}`,
 		autoApplied: 0,
 		proposed: r.proposedEdits.length,
 		quickFixes: r.autoAppliedFixes.map((f) => ({
@@ -216,7 +260,9 @@ async function runAgenticReflectionFlow(
 	storage: R2Storage,
 	date: string,
 ): Promise<ReflectionResult> {
-	const agenticResult: AgenticReflectionResult = await runAgenticReflection(env, storage);
+	const agenticResult: AgenticReflectionResult = await runAgenticReflection(env, storage, {
+		now: new Date(`${date}T12:00:00Z`),
+	});
 
 	const hasChanges =
 		agenticResult.proposedEdits.length > 0 || agenticResult.autoAppliedFixes.length > 0;
@@ -328,10 +374,10 @@ async function runAgenticReflectionFlow(
 						: `Reflection proposed a rewrite of this file and was refused: ${e.reason}`,
 			})),
 		],
-		quickScanIterations: agenticResult.quickScanIterations,
 		deepAnalysisIterations: agenticResult.deepAnalysisIterations,
-		quickScanFinished: agenticResult.quickScanFinished,
 		deepAnalysisFinished: agenticResult.deepAnalysisFinished,
+		focus: agenticResult.focus.title,
+		model: agenticResult.model,
 	};
 	// Write to pending first, then archive (reuses existing staging logic)
 	const pendingPath = await writeStagedReflection(storage, stagedReflection);
@@ -370,34 +416,27 @@ async function runAgenticReflectionFlow(
 	// months every run hit its turn cap with nothing recorded and this branch
 	// reported a clean bill of health; running out of turns is now said out
 	// loud.
-	const incomplete =
-		agenticResult.deepAnalysisFinished === false || agenticResult.quickScanFinished === false;
+	const incomplete = agenticResult.deepAnalysisFinished === false;
+	const focusLine = `Focus: ${agenticResult.focus.title}.`;
 	let summary: string;
 	if (!hasChanges && !hasFlagged && incomplete) {
-		const phases: string[] = [];
-		if (agenticResult.quickScanFinished === false) {
-			phases.push(`quick scan stopped after ${agenticResult.quickScanIterations} turns`);
-		}
-		if (agenticResult.deepAnalysisFinished === false) {
-			phases.push(`deep analysis stopped after ${agenticResult.deepAnalysisIterations} turns`);
-		}
-		summary = `Reflection did not finish: ${phases.join(" and ")} without reaching a conclusion. Nothing was changed or flagged. This is not a sign that memory is fine.`;
+		summary = `Reflection did not finish: deep analysis stopped after ${agenticResult.deepAnalysisIterations} turns without reaching a conclusion. Nothing was changed or flagged. This is not a sign that memory is fine. ${focusLine}`;
 	} else if (!hasChanges && !hasFlagged) {
-		summary = "Memory looks good — no issues found.";
+		summary = `No issues found. ${focusLine}`;
 		if (agenticResult.summary) {
 			summary += `\n\n${agenticResult.summary}`;
 		}
 	} else if (!hasChanges && hasFlagged) {
 		// Findings exist but the model didn't propose any structural edits.
 		// Surface the count so the human knows to look at the card.
-		summary = `Flagged ${agenticResult.flaggedIssues.length} issue${agenticResult.flaggedIssues.length === 1 ? "" : "s"} for review (no auto-edits applied).`;
+		summary = `Flagged ${agenticResult.flaggedIssues.length} issue${agenticResult.flaggedIssues.length === 1 ? "" : "s"} for review (no auto-edits applied). ${focusLine}`;
 		if (agenticResult.summary) {
 			summary += `\n\n${agenticResult.summary}`;
 		}
 	} else {
 		const parts: string[] = [];
 		if (quickFixes.length > 0) {
-			parts.push(`${quickFixes.length} quick fixes`);
+			parts.push(`${quickFixes.length} whitespace tidies`);
 		}
 		if (appliedEdits.length > 0) {
 			parts.push(`${appliedEdits.length} edits`);
@@ -405,7 +444,7 @@ async function runAgenticReflectionFlow(
 		if (failedEdits.length > 0) {
 			parts.push(`${failedEdits.length} failed`);
 		}
-		summary = `Auto-applied ${parts.join(", ")}.`;
+		summary = `Auto-applied ${parts.join(", ")}. ${focusLine}`;
 		if (hasFlagged) {
 			summary += ` Plus ${agenticResult.flaggedIssues.length} flagged for review.`;
 		}
@@ -421,6 +460,8 @@ async function runAgenticReflectionFlow(
 		date,
 		summary,
 		incomplete,
+		focus: agenticResult.focus.title,
+		model: agenticResult.model,
 		mode: "agentic",
 		autoApplied: quickFixes.length + appliedEdits.length,
 		proposed: 0, // Nothing left pending — all auto-applied

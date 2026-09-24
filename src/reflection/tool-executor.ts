@@ -133,25 +133,14 @@ export async function executeReflectionTool(
 					context,
 				);
 
-			case "flagForDeepAnalysis":
 			case "flagIssue":
-				return executeFlagForDeepAnalysis(args as unknown as FlaggedIssue, context);
+				return executeFlagIssue(args as unknown as FlaggedIssue, context);
 
 			case "finishReflection":
 				return {
 					success: true,
 					result: {
 						finished: true,
-						...args,
-					},
-				};
-
-			case "finishQuickScan":
-				return {
-					success: true,
-					result: {
-						finished: true,
-						phase: "quick_scan",
 						...args,
 					},
 				};
@@ -497,7 +486,7 @@ async function executeAutoApply(
 /**
  * Flag an issue for deep analysis
  */
-async function executeFlagForDeepAnalysis(
+async function executeFlagIssue(
 	args: FlaggedIssue,
 	context: ToolExecutionContext,
 ): Promise<ToolResult> {

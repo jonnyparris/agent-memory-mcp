@@ -148,7 +148,7 @@ export function buildReflectionCard(
 	if (quickFixes.length > 0) {
 		const fixLines = quickFixes.map((f) => `- <b>${f.path}</b> (${f.action}): ${f.reason}`);
 		sections.push({
-			header: `Quick Fixes (${quickFixes.length})`,
+			header: `Tidied (${quickFixes.length})`,
 			collapsible: quickFixes.length > 3,
 			uncollapsibleWidgetsCount: 1,
 			widgets: [

@@ -43,8 +43,10 @@ describe("reflection write consistency", () => {
 			autoAppliedFixes: [],
 			flaggedIssues: [],
 			writeFailures: [],
-			quickScanIterations: 1,
 			deepAnalysisIterations: 1,
+			deepAnalysisFinished: true,
+			focus: { id: "orphans", title: "Links and orphans" },
+			model: "@cf/test/model",
 		});
 	});
 
@@ -98,10 +100,10 @@ describe("reflection write consistency", () => {
 			autoAppliedFixes: [],
 			flaggedIssues: [],
 			writeFailures: [],
-			quickScanIterations: 12,
 			deepAnalysisIterations: 25,
-			quickScanFinished: false,
 			deepAnalysisFinished: false,
+			focus: { id: "orphans", title: "Links and orphans" },
+			model: "@cf/test/model",
 		});
 
 		const result = await runReflection({

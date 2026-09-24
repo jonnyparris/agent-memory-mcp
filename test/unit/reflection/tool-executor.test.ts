@@ -557,12 +557,12 @@ describe("executeReflectionTool", () => {
 		});
 	});
 
-	describe("flagForDeepAnalysis", () => {
-		it("should flag an issue for deep analysis", async () => {
+	describe("flagIssue (legacy test)", () => {
+		it("should flag an issue", async () => {
 			const result = await executeReflectionTool(
 				{
 					id: "call_test",
-					name: "flagForDeepAnalysis",
+					name: "flagIssue",
 					arguments: {
 						path: "memory/learnings.md",
 						issue: "Contains outdated information about Workers AI models",
@@ -595,26 +595,6 @@ describe("executeReflectionTool", () => {
 			expect(result.success).toBe(true);
 			expect((result.result as any).finished).toBe(true);
 			expect((result.result as any).summary).toBe("Found 2 issues and proposed fixes");
-		});
-	});
-
-	describe("finishQuickScan", () => {
-		it("should finish quick scan with counts", async () => {
-			const result = await executeReflectionTool(
-				{
-					id: "call_test",
-					name: "finishQuickScan",
-					arguments: {
-						autoApplied: 3,
-						flaggedForDeepAnalysis: 2,
-					},
-				},
-				context,
-			);
-
-			expect(result.success).toBe(true);
-			expect((result.result as any).finished).toBe(true);
-			expect((result.result as any).phase).toBe("quick_scan");
 		});
 	});
 
