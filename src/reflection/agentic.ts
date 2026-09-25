@@ -74,6 +74,9 @@ Layout (typical):
 - memory/patterns/, memory/reference/: reusable knowledge
 - memory/workload/: todos and plans
 
+memory/reflections/ and memory/meta/ hold this job's own output. They are
+hidden from you on purpose; don't report them as empty or missing.
+
 Files link with Obsidian wikilinks: [[path/to/file]] or [[file|text]].
 getBacklinks shows which files link to a file.
 

@@ -73,7 +73,9 @@ Use flagIssue. Don't rewrite people files.`,
 		instructions: `Review how memory is organised.
 - Flag files in the wrong folder (a project note at the top level, a plan outside plans/).
 - Flag folders that duplicate each other.
-- Flag files over ~40KB that should be split, and suggest the split (by topic or by month).
+- Flag files over ~50KB that should be split, and suggest the split (by topic or by month).
+- Don't flag the hub files for size when they already follow a split pattern: brag-sheet.md holds the current half-year (older halves in brag-sheet/), sessions.md the current month, learnings.md is an index over learnings/YYYY-MM*.md.
+- Generated companions (an .html report next to its .md summary) are fine as they are.
 Use flagIssue with the exact move or split you recommend.`,
 		paths: [],
 	},
