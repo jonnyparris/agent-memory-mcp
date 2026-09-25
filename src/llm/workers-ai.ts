@@ -6,8 +6,8 @@
  * /v1/chat/completions endpoint.
  *
  * Models with tool calling support:
- * - @cf/moonshotai/kimi-k2.6 (1T params, 262k context, agentic) - PRIMARY
- * - @cf/zai-org/glm-4.7-flash (fast, lightweight) - AUTO-APPLY
+ * - @cf/moonshotai/kimi-k2.6 - avoid: emits tool calls inside reasoning_content
+ * - @cf/deepseek-ai/deepseek-v4-flash-0731 - reflection default (see README)
  * - @cf/meta/llama-3.3-70b-instruct-fp8-fast (proven reliable) - FALLBACK
  * - @cf/qwen/qwq-32b (reasoning model, no tool calling) - LEGACY
  */
@@ -316,7 +316,7 @@ export class WorkersAIProvider implements LLMProvider {
 export const REFLECTION_MODELS = {
 	/** Deep analysis. Picked by dry-run comparison 2026-09-25 (see README). */
 	primary: "@cf/deepseek-ai/deepseek-v4-flash-0731",
-	/** Fast model for quick scans and auto-apply */
+	/** Small, cheap model (no longer used by reflection) */
 	fast: "@cf/zai-org/glm-4.7-flash",
 	/** Fallback if primary unavailable */
 	fallback: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
