@@ -237,6 +237,28 @@ describe("runAgenticReflection", () => {
 		expect(prompts.some((p: string) => p.startsWith("Time is nearly up"))).toBe(true);
 	});
 
+	it("retries a turn with thinking off when reasoning eats the whole budget", async () => {
+		mockLLMComplete.mockResolvedValueOnce({ response: "", finishReason: "length" });
+		mockLLMComplete.mockResolvedValueOnce({
+			response: "",
+			toolCalls: [
+				{
+					id: "c",
+					name: "finishReflection",
+					arguments: { summary: "done", proposedChanges: 0, autoApplied: 0 },
+				},
+			],
+		});
+
+		const result = await runDeepAnalysisOnly(mockEnv, mockStorage);
+
+		expect(mockLLMComplete).toHaveBeenCalledTimes(2);
+		expect(mockLLMComplete.mock.calls[0][1].thinking).toBeUndefined();
+		expect(mockLLMComplete.mock.calls[1][1].thinking).toBe(false);
+		expect(result.deepAnalysisFinished).toBe(true);
+		expect(result.deepAnalysisIterations).toBe(1);
+	});
+
 	it("does not treat an empty stop as finishing", async () => {
 		mockLLMComplete.mockResolvedValue({ response: "", toolCalls: undefined });
 

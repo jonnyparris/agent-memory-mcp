@@ -338,12 +338,25 @@ async function runPhase(
 
 		let result: LLMCompletionResult;
 		try {
-			result = await llm.complete(messages, {
+			const request = {
 				systemPrompt: config.systemPrompt,
 				maxTokens: config.maxTokens,
 				temperature: config.temperature,
 				tools,
-			});
+			};
+			result = await llm.complete(messages, request);
+			// Reasoning models can spend the whole token budget thinking and
+			// return nothing (finish_reason "length", no content, no tool call).
+			// DeepSeek V4 did this on a third of its turns with an 8k budget.
+			// Retry the same turn once with thinking off so the run keeps moving.
+			if (
+				result.finishReason === "length" &&
+				!result.toolCalls?.length &&
+				!result.response?.trim()
+			) {
+				console.log(JSON.stringify({ phase: config.phase, event: "reasoning_overflow_retry" }));
+				result = await llm.complete(messages, { ...request, thinking: false });
+			}
 		} catch (e) {
 			return {
 				success: false,
@@ -490,7 +503,7 @@ You have ${MAX_DEEP_ANALYSIS_ITERATIONS} turns. Make several tool calls per turn
 		recordTools: "flagIssue or proposeEdit",
 		maxIterations: MAX_DEEP_ANALYSIS_ITERATIONS,
 		maxContextChars: DEEP_ANALYSIS_CONTEXT_CHARS,
-		maxTokens: 8192,
+		maxTokens: 16384,
 		temperature: 0.4,
 		now: clock,
 	});

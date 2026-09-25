@@ -179,6 +179,7 @@ export class WorkersAIProvider implements LLMProvider {
 					}
 				: undefined,
 			toolCalls,
+			finishReason: choice?.finish_reason,
 		};
 	}
 
@@ -202,6 +203,10 @@ export class WorkersAIProvider implements LLMProvider {
 			max_tokens: options?.maxTokens ?? 8192,
 			temperature: options?.temperature ?? 0.7,
 		};
+
+		if (options?.thinking === false) {
+			body.chat_template_kwargs = { thinking: false };
+		}
 
 		if (tools && tools.length > 0) {
 			body.tools = tools;
