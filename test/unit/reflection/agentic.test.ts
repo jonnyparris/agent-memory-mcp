@@ -222,6 +222,7 @@ describe("runAgenticReflection", () => {
 		// Turns start at 0, 4, 8 (soft warning sent after), 12 (past hard: final).
 		expect(mockLLMComplete).toHaveBeenCalledTimes(4);
 		expect(result.deepAnalysisFinished).toBe(false);
+		expect(result.summary).toContain("hit its time limit");
 		const last = mockLLMComplete.mock.calls[3];
 		const lastUser = [...last[0]].reverse().find((m: { role: string }) => m.role === "user");
 		expect(lastUser.content).toContain("Time is up");

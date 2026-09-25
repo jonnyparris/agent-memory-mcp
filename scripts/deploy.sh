@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Deploy only what's on origin/main.
+# Run checks, then deploy. With STRICT_DEPLOY=1 (set it in .env), also
+# refuse to deploy anything that isn't exactly origin/main.
+#
+# Strict mode is opt-in because self-hosters usually carry local edits to
+# wrangler.jsonc (bucket name, crons) and deploy from a dirty tree. For the
+# maintainer's own instance it is on:
 #
 # The production worker was once deployed from a checkout that didn't match
 # main, and two finished commits (paged `read`, history snapshots) sat on a
@@ -16,10 +21,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-branch=$(git rev-parse --abbrev-ref HEAD)
-git fetch -q origin main
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
 
-if [ "${ALLOW_BRANCH_DEPLOY:-}" != "1" ]; then
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+if [ "${STRICT_DEPLOY:-}" != "1" ]; then
+  : # not strict: checks only
+elif [ "${ALLOW_BRANCH_DEPLOY:-}" != "1" ]; then
+  git fetch -q origin main
   if [ "$branch" != "main" ]; then
     echo "✗ On '$branch', not main. Merge first, or ALLOW_BRANCH_DEPLOY=1 to override." >&2
     exit 1
@@ -43,4 +57,4 @@ npm run typecheck
 npm run lint
 npm run test:unit
 
-npx wrangler deploy --message "$(git rev-parse --short HEAD) ($branch)" "$@"
+npx wrangler deploy --message "$(git rev-parse --short HEAD 2>/dev/null || echo local) ($branch)" "$@"

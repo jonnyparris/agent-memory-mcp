@@ -55,8 +55,8 @@ const DEEP_ANALYSIS_CONTEXT_CHARS = 400_000;
  * count alone can't keep a run safe. After the soft deadline the model is told
  * to wrap up; after the hard deadline its next turn is the final one.
  */
-export const SOFT_DEADLINE_MS = 8 * 60_000;
-export const HARD_DEADLINE_MS = 10 * 60_000;
+export const SOFT_DEADLINE_MS = 9 * 60_000;
+export const HARD_DEADLINE_MS = 11 * 60_000;
 
 /** Empty responses (no text, no tool call) tolerated before giving up. */
 const MAX_EMPTY_STOPS = 2;
@@ -282,9 +282,12 @@ interface PhaseConfig {
 	hardDeadlineMs?: number;
 }
 
+type StopReason = "finished" | "turns" | "deadline" | "silent" | "error";
+
 interface PhaseResult {
 	success: boolean;
 	iterations: number;
+	stopReason: StopReason;
 	/** True if the model finished on its own rather than running out of turns. */
 	finished: boolean;
 	/** Arguments of the finish tool call, or the final prose if it stopped without one. */
@@ -308,6 +311,7 @@ async function runPhase(
 	let emptyStops = 0;
 	let checkpointSent = false;
 	let deadlineWarned = false;
+	let stopReason: StopReason = "turns";
 	const now = config.now ?? Date.now;
 	const started = now();
 	const softDeadline = config.softDeadlineMs ?? SOFT_DEADLINE_MS;
@@ -345,6 +349,7 @@ async function runPhase(
 				success: false,
 				iterations,
 				finished: false,
+				stopReason: "error",
 				error: `Deep analysis error: ${e instanceof Error ? e.message : String(e)}`,
 			};
 		}
@@ -382,7 +387,13 @@ async function runPhase(
 			console.log(
 				JSON.stringify({ phase: config.phase, event: "no_tool_calls", finishing: !!text }),
 			);
-			return { success: true, iterations, finished: !!text, finalText: text };
+			return {
+				success: true,
+				iterations,
+				finished: !!text,
+				stopReason: text ? "finished" : "silent",
+				finalText: text,
+			};
 		}
 
 		let finishArgs: Record<string, unknown> | undefined;
@@ -397,10 +408,13 @@ async function runPhase(
 		// send its last proposeEdit alongside finishReflection, and breaking out
 		// early dropped those.
 		if (finishArgs) {
-			return { success: true, iterations, finished: true, finishArgs };
+			return { success: true, iterations, finished: true, stopReason: "finished", finishArgs };
 		}
 
-		if (isFinalTurn) break;
+		if (isFinalTurn) {
+			stopReason = pastHard ? "deadline" : "turns";
+			break;
+		}
 
 		const left = remaining - 1;
 		const nudge = budgetNudge(left, config.finishTool, config.recordTools);
@@ -430,13 +444,14 @@ async function runPhase(
 	console.log(
 		JSON.stringify({
 			phase: config.phase,
-			event: "iteration_limit_reached",
+			event: "phase_unfinished",
+			stopReason,
 			iterations,
 			proposed: context.proposedEdits.length,
 			flagged: context.flaggedIssues.length,
 		}),
 	);
-	return { success: true, iterations, finished: false };
+	return { success: true, iterations, finished: false, stopReason };
 }
 
 /**
@@ -491,9 +506,11 @@ You have ${MAX_DEEP_ANALYSIS_ITERATIONS} turns. Make several tool calls per turn
 	}
 	if (!result.finished && result.success) {
 		const why =
-			result.iterations >= MAX_DEEP_ANALYSIS_ITERATIONS
-				? `ran out of turns (${result.iterations}/${MAX_DEEP_ANALYSIS_ITERATIONS})`
-				: `stopped responding after ${result.iterations} of ${MAX_DEEP_ANALYSIS_ITERATIONS} turns`;
+			result.stopReason === "deadline"
+				? `hit its time limit after ${result.iterations} turns`
+				: result.stopReason === "silent"
+					? `stopped responding after ${result.iterations} turns`
+					: `ran out of turns (${result.iterations}/${MAX_DEEP_ANALYSIS_ITERATIONS})`;
 		summary = `Deep analysis ${why} before finishing. Proposed ${context.proposedEdits.length} edits and flagged ${context.flaggedIssues.length} issues before it stopped.`;
 	}
 
