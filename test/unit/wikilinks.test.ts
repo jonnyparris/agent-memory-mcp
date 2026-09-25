@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWikilinks } from "../../src/wikilinks";
+import { backlinkTargetVariants, parseWikilinks } from "../../src/wikilinks";
 
 describe("parseWikilinks", () => {
 	it("returns empty array for empty content", () => {
@@ -92,5 +92,30 @@ describe("parseWikilinks", () => {
 		const paths = Array.from({ length: 100 }, (_, i) => `note-${i}`);
 		const content = paths.map((p) => `[[${p}]]`).join(" ");
 		expect(parseWikilinks(content)).toEqual(paths);
+	});
+});
+
+describe("backlinkTargetVariants", () => {
+	it("matches every way a memory file is commonly linked", () => {
+		const v = backlinkTargetVariants("memory/preferences.md");
+		for (const spelling of [
+			"memory/preferences.md",
+			"memory/preferences",
+			"preferences",
+			"preferences.md",
+		]) {
+			expect(v).toContain(spelling);
+		}
+	});
+
+	it("includes the bare file name for nested files", () => {
+		const v = backlinkTargetVariants("memory/patterns/retry.md");
+		expect(v).toContain("patterns/retry");
+		expect(v).toContain("retry");
+		expect(v).toContain("memory/patterns/retry");
+	});
+
+	it("returns nothing for an empty target", () => {
+		expect(backlinkTargetVariants("  ")).toEqual([]);
 	});
 });

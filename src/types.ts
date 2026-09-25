@@ -20,10 +20,12 @@ export interface Env {
 	CHAT_WEBHOOK_URL?: string;
 	/** Chat space ID to post notifications to (optional, for scheduled reflection notifications) */
 	CHAT_WEBHOOK_SPACE_ID?: string;
-	/** Primary model for agentic reflection (default: @cf/moonshotai/kimi-k2.6) */
+	/** Deep-analysis model for reflection (default: @cf/deepseek-ai/deepseek-v4-flash-0731) */
 	REFLECTION_MODEL?: string;
-	/** Fast model for quick scans (default: @cf/zai-org/glm-4.7-flash) */
-	REFLECTION_MODEL_FAST?: string;
+	/** Force a reflection focus id instead of the weekday rotation. */
+	REFLECTION_FOCUS?: string;
+	/** Set to "false" to skip the deterministic whitespace tidy. */
+	REFLECTION_HYGIENE?: string;
 	/** Enable agentic reflection with tool calling (default: true) */
 	USE_AGENTIC_REFLECTION?: string;
 }

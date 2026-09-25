@@ -213,24 +213,60 @@ memory/
 
 ## Scheduled reflection
 
-The server includes an automated self-improvement system. Every day at 6am UTC, it reviews your memory files and cleans them up.
+Every day at 6am UTC the server reviews your memory and cleans it up. It's a janitor, not an architect (see below).
 
-**Quick scan** (GLM 4.7 Flash) catches simple issues -- typos, broken formatting, duplicate entries -- and fixes them automatically.
+**1. Hygiene (no model).** Trailing whitespace, runs of blank lines and missing final newlines are fixed with plain code. Fenced code blocks are never touched. Disable with `REFLECTION_HYGIENE="false"`.
 
-**Deep analysis** (Moonshot Kimi K2.6, 262k context, agentic) looks for contradictions, outdated information, gaps, orphaned files, and missing cross-references. It proposes changes for you to review, including adding `[[wikilinks]]` where files clearly relate but don't reference each other. It uses the backlink index to understand which files are hubs and which are orphans before proposing merges or deletes.
+**2. Deep analysis (one model, one focus per night).** Reviewing "everything" in one run is too broad for any model you'd run nightly: it reads a few files and runs out of time. So each weekday gets one job, and the model only sees the files that job needs:
 
-Override the defaults with `REFLECTION_MODEL` and `REFLECTION_MODEL_FAST` in `wrangler.jsonc` or as secrets if you want to try a different pair.
+| Focus id | Looks for |
+|---|---|
+| `orphans` | Files that should link to each other; adds short "See also" links |
+| `plans` | Finished, abandoned, superseded or duplicate plans and todos |
+| `learnings` | Contradictory or duplicated lessons |
+| `projects` | Stale project status, contradictions between project notes |
+| `people` | Contradictory roles, duplicate people, stale preferences |
+| `structure` | Misplaced files, duplicate folders, files that should be split |
+| `patterns` | Patterns/reference docs that contradict newer learnings |
 
-You get a notification summary after each run. You can also trigger it manually:
+The model can **flag** an issue for you (the default) or **edit** a file. Edits are applied automatically, with guards:
+
+- whole-file deletes are never applied; they are flagged
+- a `replace` that would drop more than 30% of a file is refused and flagged
+- every write snapshots the previous content, so `history`/`rollback` can undo it
+
+**Budgets.** 25 turns and about 11 minutes of wall time (a cron-triggered Worker gets 15). The model is nudged at the halfway mark if it hasn't recorded anything, warned near the end, and its last turn can only record findings or finish. A run that stops early is reported as **incomplete**. It never says "looks good" unless the model actually finished.
+
+**Notifications** go out only when there's something to act on: edits, flags, failures or an incomplete run. There's a weekly heartbeat on Sundays with stats, and an alert if three runs in a row don't finish. Run history is kept in `memory/meta/reflection-runs.json`.
+
+Trigger a run manually:
 
 ```bash
 curl -X POST "https://your-worker.workers.dev/reflect" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
+`?dry_run=1` shows what a run would do without writing anything or notifying. Dry runs also accept `&focus=<id>` and `&model=@cf/...` for trying prompts and models. A run takes 2-12 minutes.
+
+### Choosing a reflection model
+
+Set `REFLECTION_MODEL` in `wrangler.jsonc`. The default was picked by dry runs against a real 1,300-file memory store (2026-09-25, `plans` focus):
+
+| Model | Result | Time |
+|---|---|---|
+| `@cf/deepseek-ai/deepseek-v4-flash-0731` | Finished, 11 specific findings, all spot-checked correct | 13 min at 25 turns (now capped at ~11) |
+| `@cf/openai/gpt-oss-120b` | Finished, 1 finding | 2 min |
+| `@cf/google/gemma-4-26b-a4b-it` | Ran out of turns, 2 findings (finishes on narrower focuses) | 3 min |
+| `@cf/nvidia/nemotron-3-120b-a12b` | Ran out of turns, 3 findings | 4 min |
+| `@cf/qwen/qwen3.8-27b` | Request timeout | - |
+| `@cf/zai-org/glm-5.3`, `glm-5.3-flash` | Over 15 minutes | - |
+| `@cf/moonshotai/kimi-k2.6` | Unusable: emits tool calls as text inside `reasoning_content` | - |
+
+DeepSeek costs more per token than Gemma ($0.44 vs $0.10 per million input tokens), but most of a run's input is cached ($0.014/M). Expect cents per night. For the cheapest setup that still works, use Gemma 4.
+
 ### What the scheduled reflection is *not*
 
-The cron-driven reflection is a lightweight, autonomous scan. It runs unattended on a budget of a few iterations and writes proposals to `memory/reflections/pending/{date}.md` (empty proposals get archived to `memory/reflections/archive/{date}.md` to make zero-output runs visible).
+The cron-driven reflection is a narrow, autonomous scan. It runs unattended on a fixed budget and records each run in `memory/reflections/archive/{date}.md` (plus a `.json` sidecar).
 
 This is **not the same as** a deep reflection workflow you might drive from your agent — e.g. a `/nightly-reflect` slash command that pulls your entire week of activity (calendar, git log, scratch notes, chat history) and writes a multi-section improvement plan. The cron has none of that context. It only sees what's already in memory.
 
@@ -269,10 +305,10 @@ Runs entirely within Cloudflare's free tier for personal use:
 | R2 Storage | 10 GB/month | ~1 MB | $0 |
 | R2 Operations | 10M reads, 1M writes | ~3K reads, ~600 writes | $0 |
 | Workers | 10M requests/month | ~6K | $0 |
-| Workers AI | 10K neurons/day | ~60 | $0 |
+| Workers AI | 10K neurons/day | embeddings + nightly reflection | $0-5 |
 | Durable Objects | 100K requests/day | ~200 | $0 |
 
-**Total: $0/month**
+**Total: $0-5/month.** Embeddings fit in the free tier. The nightly reflection with the default model can go past it; switch `REFLECTION_MODEL` to Gemma 4 to stay close to free.
 
 ---
 
@@ -283,8 +319,10 @@ npm install       # Install dependencies
 npm run dev       # Run locally
 npm test          # Run all tests
 npm run test:unit # Unit tests only
-npm run deploy    # Deploy to Cloudflare
+npm run deploy    # Typecheck, lint, test, then deploy
 ```
+
+`npm run deploy` runs the checks before deploying. Set `STRICT_DEPLOY=1` in `.env` to also refuse deploys from anything but a clean, up-to-date `main` (`ALLOW_BRANCH_DEPLOY=1` overrides for testing a branch). If your Cloudflare login can see several accounts, set `CLOUDFLARE_ACCOUNT_ID` in `.env` too.
 
 ### Migrating existing memory files
 

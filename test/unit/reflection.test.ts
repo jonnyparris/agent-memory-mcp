@@ -311,6 +311,18 @@ describe("notification card building", () => {
 		expect(placeholderSection).toBeUndefined();
 	});
 
+	it("should not show the 'memory looks good' placeholder for an incomplete run", async () => {
+		const { buildReflectionCard } = await import("../../src/notification");
+		const card = buildReflectionCard("2026-09-24", "Reflection did not finish", {
+			incomplete: true,
+		});
+		const hasPlaceholder = card.sections.some((s) =>
+			s.widgets.some((w) => w.textParagraph?.text === "No changes made — memory looks good."),
+		);
+		expect(hasPlaceholder).toBe(false);
+		expect(card.header?.title).toContain("incomplete");
+	});
+
 	it("should show the 'memory looks good' placeholder only when truly nothing happened", async () => {
 		const { buildReflectionCard } = await import("../../src/notification");
 		const card = buildReflectionCard("2026-05-18", "Memory looks good — no issues found.");

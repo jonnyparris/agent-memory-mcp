@@ -96,6 +96,8 @@ describe("MCP Tools", () => {
 			expect(toolNames).toContain("history");
 			expect(toolNames).toContain("rollback");
 			expect(toolNames).toContain("prune_index");
+			expect(toolNames).toContain("delete");
+			expect(toolNames).toContain("move");
 		});
 	});
 
@@ -478,6 +480,176 @@ describe("MCP Tools", () => {
 
 			const data = (await response.json()) as McpErrorResult;
 			expect(data.error.code).toBe(-32700);
+		});
+	});
+
+	describe("delete and move tools", () => {
+		const text = (r: McpToolResult) => r.result.content[0]!.text;
+
+		it("deletes with a snapshot that rollback can restore", async () => {
+			const path = "memory/test-delete-me.md";
+			await callTool("write", { path, content: "keep me safe", detect_overlaps: false });
+
+			const del = parseToolJson(text(await callTool("delete", { path })));
+			expect(del.success).toBe(true);
+			expect(del.previous_version_id).toBeTruthy();
+			expect((await callTool("read", { path })).result.isError).toBe(true);
+
+			await callTool("rollback", { path, version_id: del.previous_version_id });
+			expect(text(await callTool("read", { path }))).toContain("keep me safe");
+		});
+
+		it("purge removes the file and every snapshot", async () => {
+			const path = "memory/test-purge-me.md";
+			await callTool("write", { path, content: "v1 secret", detect_overlaps: false });
+			await callTool("write", { path, content: "v2 secret", detect_overlaps: false });
+
+			const del = parseToolJson(text(await callTool("delete", { path, purge: true })));
+			expect(del.purged).toBe(true);
+			const history = parseToolJson(text(await callTool("history", { path })));
+			expect(history.versions).toEqual([]);
+		});
+
+		it("moves a file and reports who links to the old path", async () => {
+			await callTool("write", {
+				path: "memory/test-move-src.md",
+				content: "moving content",
+				detect_overlaps: false,
+			});
+			await callTool("write", {
+				path: "memory/test-move-linker.md",
+				content: "See [[memory/test-move-src]]",
+				detect_overlaps: false,
+			});
+
+			const moved = parseToolJson(
+				text(
+					await callTool("move", { from: "memory/test-move-src.md", to: "memory/moved/dst.md" }),
+				),
+			);
+			expect(moved.success).toBe(true);
+			expect(moved.backlinks_to_update).toContain("memory/test-move-linker.md");
+			expect(text(await callTool("read", { path: "memory/moved/dst.md" }))).toContain(
+				"moving content",
+			);
+			expect((await callTool("read", { path: "memory/test-move-src.md" })).result.isError).toBe(
+				true,
+			);
+		});
+
+		it("refuses to overwrite on move without overwrite: true", async () => {
+			await callTool("write", {
+				path: "memory/test-mv-a.md",
+				content: "a",
+				detect_overlaps: false,
+			});
+			await callTool("write", {
+				path: "memory/test-mv-b.md",
+				content: "b",
+				detect_overlaps: false,
+			});
+			const res = await callTool("move", {
+				from: "memory/test-mv-a.md",
+				to: "memory/test-mv-b.md",
+			});
+			expect(res.result.isError).toBe(true);
+			expect(text(await callTool("read", { path: "memory/test-mv-b.md" }))).toContain("b");
+		});
+	});
+
+	describe("history and rollback tools", () => {
+		// The bug this whole feature exists for: a full-file `write` that
+		// replaced a large document with a fragment, with no way back. These
+		// tests walk that exact scenario end to end over the MCP surface.
+		it("reports no snapshots for a path that has never been overwritten", async () => {
+			await callTool("write", {
+				path: "memory/test-history-fresh.md",
+				content: "only ever written once",
+				wait_for_index: false,
+			});
+
+			const result = await callTool("history", { path: "memory/test-history-fresh.md" });
+			const body = parseToolJson(result.result.content[0]!.text);
+
+			expect(body.versions).toEqual([]);
+			expect(body.hint).toMatch(/has not been overwritten/);
+			// The old shape advertised a bucket feature that does not exist.
+			expect(body.versioning_enabled).toBeUndefined();
+		});
+
+		it("recovers a document clobbered by a careless overwrite", async () => {
+			const path = "memory/test-history-clobber.md";
+			const original = `# Learnings\n\n${"real content ".repeat(50)}`;
+
+			await callTool("write", { path, content: original, wait_for_index: false });
+			const overwrite = await callTool("write", {
+				path,
+				content: "oops, a fragment",
+				wait_for_index: false,
+			});
+
+			// The write that did the damage hands back the undo handle.
+			const overwriteBody = parseToolJson(overwrite.result.content[0]!.text);
+			expect(overwriteBody.previous_version_id).toBeDefined();
+
+			const history = await callTool("history", { path });
+			const versions = parseToolJson(history.result.content[0]!.text).versions;
+			expect(versions).toHaveLength(1);
+			expect(versions[0].version_id).toBe(overwriteBody.previous_version_id);
+
+			const rollback = await callTool("rollback", {
+				path,
+				version_id: overwriteBody.previous_version_id,
+			});
+			const rollbackBody = parseToolJson(rollback.result.content[0]!.text);
+			expect(rollbackBody.success).toBe(true);
+
+			const read = await callTool("read", { path });
+			expect(read.result.content[0]!.text).toContain("real content");
+			expect(read.result.content[0]!.text).not.toContain("oops, a fragment");
+		});
+
+		it("snapshots the rollback itself, so an undo can be undone", async () => {
+			const path = "memory/test-history-redo.md";
+			await callTool("write", { path, content: "good", wait_for_index: false });
+			const bad = await callTool("write", { path, content: "bad", wait_for_index: false });
+			const badBody = parseToolJson(bad.result.content[0]!.text);
+
+			const rollback = await callTool("rollback", {
+				path,
+				version_id: badBody.previous_version_id,
+			});
+			const rollbackBody = parseToolJson(rollback.result.content[0]!.text);
+
+			// Restoring "good" superseded "bad", which must itself be kept.
+			expect(rollbackBody.previous_version_id).toBeDefined();
+			const restoredBad = await callTool("rollback", {
+				path,
+				version_id: rollbackBody.previous_version_id,
+			});
+			expect(parseToolJson(restoredBad.result.content[0]!.text).success).toBe(true);
+
+			const read = await callTool("read", { path });
+			expect(read.result.content[0]!.text).toContain("bad");
+		});
+
+		it("errors on an unknown version id", async () => {
+			const result = await callTool("rollback", {
+				path: "memory/test-history-clobber.md",
+				version_id: "not-a-real-version",
+			});
+			expect(result.result.isError).toBe(true);
+			expect(result.result.content[0]!.text).toMatch(/not found/i);
+		});
+
+		it("keeps snapshots out of the list tool", async () => {
+			const path = "memory/test-history-listed.md";
+			await callTool("write", { path, content: "one", wait_for_index: false });
+			await callTool("write", { path, content: "two", wait_for_index: false });
+
+			const listed = await callTool("list", { path: "", recursive: true });
+			const files = parseToolJson(listed.result.content[0]!.text).files;
+			expect(files.some((f: { path: string }) => f.path.startsWith("_history/"))).toBe(false);
 		});
 	});
 });

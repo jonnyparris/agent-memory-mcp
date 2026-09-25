@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { extractSnippet, truncate } from "../../src/truncate";
+import type { ReadWindow } from "../../src/truncate";
+import {
+	MAX_READ_LENGTH,
+	TRUNCATION_MARKER,
+	extractSnippet,
+	readWindow,
+	truncate,
+} from "../../src/truncate";
 
 describe("truncate", () => {
 	it("should not truncate short content", () => {
@@ -128,5 +135,130 @@ describe("extractSnippet", () => {
 		const result = extractSnippet(content);
 
 		expect(result.length).toBeLessThanOrEqual(510); // 500 + ellipsis
+	});
+});
+
+describe("readWindow", () => {
+	it("returns the whole file untouched when it fits", () => {
+		const content = "# Notes\nshort enough\n";
+		const w = readWindow(content);
+
+		expect(w.content).toBe(content);
+		expect(w.truncated).toBe(false);
+		expect(w.next_offset).toBeUndefined();
+		expect(w.offset).toBe(0);
+		expect(w.returned).toBe(content.length);
+		expect(w.total_length).toBe(content.length);
+	});
+
+	it("caps an unpaged read and marks it in-band", () => {
+		// The accident case: no paging arguments, file too long. The warning
+		// has to be somewhere code that ignores metadata will still hit it.
+		const content = "a".repeat(MAX_READ_LENGTH + 5000);
+		const w = readWindow(content);
+
+		expect(w.truncated).toBe(true);
+		expect(w.content.endsWith(TRUNCATION_MARKER)).toBe(true);
+		expect(w.returned).toBe(MAX_READ_LENGTH);
+		expect(w.next_offset).toBe(MAX_READ_LENGTH);
+		expect(w.total_length).toBe(content.length);
+	});
+
+	it("omits the marker when the caller is paging deliberately", () => {
+		const content = "a".repeat(MAX_READ_LENGTH + 5000);
+		const w = readWindow(content, { offset: 0, marker: false });
+
+		expect(w.truncated).toBe(true);
+		expect(w.content).not.toContain("[Content truncated");
+		expect(w.content.length).toBe(w.returned);
+	});
+
+	it("reassembles a large file losslessly across windows", () => {
+		// The whole point of the feature. A 78K-character file is the real
+		// case: learnings.md could not be retrieved in full at all before.
+		const content = Array.from({ length: 4000 }, (_, i) => `line ${i} of the file`).join("\n");
+		expect(content.length).toBeGreaterThan(MAX_READ_LENGTH);
+
+		let offset: number | undefined = 0;
+		let assembled = "";
+		let windows = 0;
+		while (offset !== undefined) {
+			const w: ReadWindow = readWindow(content, { offset, marker: false });
+			assembled += w.content;
+			offset = w.next_offset;
+			windows++;
+			expect(windows).toBeLessThan(50); // paging must terminate
+		}
+
+		expect(windows).toBeGreaterThan(1);
+		expect(assembled).toBe(content);
+	});
+
+	it("reassembles losslessly with a small limit and no newlines", () => {
+		// Degenerate input: one enormous line, so the newline-preferred cut
+		// point never applies and every window is a hard cut.
+		const content = "x".repeat(1000);
+		let offset: number | undefined = 0;
+		let assembled = "";
+		while (offset !== undefined) {
+			const w = readWindow(content, { offset, limit: 7, marker: false });
+			expect(w.returned).toBeGreaterThan(0); // else paging never ends
+			assembled += w.content;
+			offset = w.next_offset;
+		}
+		expect(assembled).toBe(content);
+	});
+
+	it("prefers a newline cut point so windows do not split a line", () => {
+		const content = `${"a".repeat(90)}\n${"b".repeat(90)}`;
+		const w = readWindow(content, { limit: 100, marker: false });
+
+		expect(w.content).toBe("a".repeat(90));
+		expect(w.next_offset).toBe(90);
+		// Resuming keeps the newline rather than dropping it.
+		const rest = readWindow(content, { offset: w.next_offset, limit: 100, marker: false });
+		expect(w.content + rest.content).toBe(content);
+	});
+
+	it("ignores a newline cut point that would waste most of the window", () => {
+		// Newline at 10% of the budget: honouring it would return a sliver
+		// and turn a two-call read into ten.
+		const content = `${"a".repeat(10)}\n${"b".repeat(200)}`;
+		const w = readWindow(content, { limit: 100, marker: false });
+
+		expect(w.returned).toBe(100);
+	});
+
+	it("clamps an offset past the end to an empty tail", () => {
+		// A file that shrank between paged calls should not error.
+		const content = "abcdef";
+		const w = readWindow(content, { offset: 999, marker: false });
+
+		expect(w.content).toBe("");
+		expect(w.offset).toBe(content.length);
+		expect(w.truncated).toBe(false);
+		expect(w.next_offset).toBeUndefined();
+	});
+
+	it("clamps hostile offset and limit values", () => {
+		const content = "a".repeat(200);
+
+		expect(readWindow(content, { offset: -50, marker: false }).offset).toBe(0);
+		expect(readWindow(content, { limit: 0, marker: false }).returned).toBe(1);
+		expect(readWindow(content, { limit: -10, marker: false }).returned).toBe(1);
+		expect(readWindow(content, { offset: 1.9, limit: 10.9, marker: false }).offset).toBe(1);
+
+		const huge = "a".repeat(MAX_READ_LENGTH + 100);
+		// A caller cannot raise the cap and blow up the response.
+		expect(readWindow(huge, { limit: 999_999, marker: false }).returned).toBe(MAX_READ_LENGTH);
+	});
+
+	it("reports the final window as complete, not truncated", () => {
+		const content = "a".repeat(150);
+		const w = readWindow(content, { offset: 100, limit: 100, marker: false });
+
+		expect(w.returned).toBe(50);
+		expect(w.truncated).toBe(false);
+		expect(w.next_offset).toBeUndefined();
 	});
 });

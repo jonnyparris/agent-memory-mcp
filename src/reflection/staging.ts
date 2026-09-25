@@ -20,8 +20,14 @@ export interface StagedReflection {
 	autoAppliedFixes: AutoAppliedFix[];
 	failedEdits?: string[];
 	flaggedIssues: FlaggedIssue[];
-	quickScanIterations: number;
+	/** Legacy: the LLM quick scan was removed. Kept optional for old records. */
+	quickScanIterations?: number;
 	deepAnalysisIterations: number;
+	/** Whether deep analysis finished on its own. Absent on older records. */
+	deepAnalysisFinished?: boolean;
+	/** Tonight's focus and model. Absent on older records. */
+	focus?: string;
+	model?: string;
 }
 
 /**
@@ -82,9 +88,13 @@ function buildStagedContent(reflection: StagedReflection): string {
 		autoAppliedFixes,
 		failedEdits = [],
 		flaggedIssues,
-		quickScanIterations,
 		deepAnalysisIterations,
+		deepAnalysisFinished,
+		focus,
+		model,
 	} = reflection;
+	const finishedLabel = (v: boolean | undefined) =>
+		v === undefined ? "" : v ? " (finished)" : " (did not finish)";
 
 	const sections: string[] = [];
 
@@ -99,8 +109,9 @@ ${summary}
 
 | Metric | Value |
 |--------|-------|
-| Quick Scan Iterations | ${quickScanIterations} |
-| Deep Analysis Iterations | ${deepAnalysisIterations} |
+| Focus | ${focus ?? "-"} |
+| Model | ${model ?? "-"} |
+| Deep Analysis Turns | ${deepAnalysisIterations}${finishedLabel(deepAnalysisFinished)} |
 | Auto-Applied Fixes | ${autoAppliedFixes.length} |
 | Proposed Changes | ${proposedEdits.length} |
 | Failed Changes | ${failedEdits.length} |

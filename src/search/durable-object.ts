@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { backlinkTargetVariants } from "../wikilinks";
 import { EMBEDDING_DIMENSIONS, generateEmbedding } from "./embeddings";
 import { HNSWIndex, cosineSimilarity } from "./hnsw";
 import { indexSkipReason } from "./indexable";
@@ -405,10 +406,13 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 
 	async backlinks(target: string): Promise<{ backlinks: string[] }> {
 		await this.ensureReady();
+		const variants = backlinkTargetVariants(target);
+		if (variants.length === 0) return { backlinks: [] };
+		const placeholders = variants.map(() => "?").join(", ");
 		const rows = [
 			...this.ctx.storage.sql.exec<{ source: string }>(
-				"SELECT source FROM file_links WHERE target = ? ORDER BY source ASC",
-				target,
+				`SELECT DISTINCT source FROM file_links WHERE target IN (${placeholders}) ORDER BY source ASC`,
+				...variants,
 			),
 		];
 		return { backlinks: rows.map((r) => r.source) };

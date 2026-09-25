@@ -113,3 +113,25 @@ describe("tool-call round trip", () => {
 		expect(new Set(ids).size).toBe(2);
 	});
 });
+
+describe("thinking switch and finish reason", () => {
+	it("sends chat_template_kwargs.thinking=false only when asked", async () => {
+		const ai = mockAI();
+		const provider = new WorkersAIProvider(ai as unknown as Ai, "@cf/test/model");
+		await provider.complete("hi");
+		await provider.complete("hi", { thinking: false });
+		expect(ai.run.mock.calls[0][1].chat_template_kwargs).toBeUndefined();
+		expect(ai.run.mock.calls[1][1].chat_template_kwargs).toEqual({ thinking: false });
+	});
+
+	it("surfaces finish_reason", async () => {
+		const ai = mockAI({
+			choices: [
+				{ index: 0, message: { role: "assistant", content: null }, finish_reason: "length" },
+			],
+		});
+		const provider = new WorkersAIProvider(ai as unknown as Ai, "@cf/test/model");
+		const result = await provider.complete("hi");
+		expect(result.finishReason).toBe("length");
+	});
+});

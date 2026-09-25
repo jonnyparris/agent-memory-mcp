@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createR2Storage } from "../../src/storage/r2";
+import { HISTORY_PREFIX, createR2Storage } from "../../src/storage/r2";
 
 describe("R2 Storage", () => {
 	const storage = createR2Storage(env.MEMORY_BUCKET);
@@ -12,6 +12,13 @@ describe("R2 Storage", () => {
 			if (!file.path.endsWith("/")) {
 				await storage.delete(file.path);
 			}
+		}
+		// Snapshots are deliberately invisible to `storage.list`, so the raw
+		// binding is the only way to sweep them. Without this, the retention
+		// and "first write" tests inherit versions from earlier tests.
+		const snapshots = await env.MEMORY_BUCKET.list({ prefix: `${HISTORY_PREFIX}test/` });
+		for (const object of snapshots.objects) {
+			await env.MEMORY_BUCKET.delete(object.key);
 		}
 	});
 
@@ -145,20 +152,106 @@ describe("R2 Storage", () => {
 		});
 	});
 
-	describe("versioning", () => {
-		// Note: These tests may not work without bucket-level versioning enabled
-		it("should return empty versions when versioning not enabled", async () => {
-			await storage.write("test/versioned.md", "Version 1");
+	describe("version history", () => {
+		it("takes no snapshot when history is not requested", async () => {
+			const path = "test/no-history.md";
+			await storage.write(path, "one");
+			await storage.write(path, "two");
 
-			const versions = await storage.getVersions("test/versioned.md");
-
-			// Without bucket versioning, this returns empty
-			expect(Array.isArray(versions)).toBe(true);
+			expect(await storage.getVersions(path)).toEqual([]);
 		});
 
-		it("should return null for non-existent version", async () => {
-			const content = await storage.getVersion("test/any.md", "nonexistent-version");
-			expect(content).toBeNull();
+		it("takes no snapshot on the first write of a path", async () => {
+			// Nothing was superseded. A version here would offer to restore a
+			// file into existence from nothing.
+			const result = await storage.write("test/first.md", "one", { history: true });
+
+			expect(result.previous_version_id).toBeUndefined();
+			expect(await storage.getVersions("test/first.md")).toEqual([]);
+		});
+
+		it("snapshots the superseded content and returns its version id", async () => {
+			const path = "test/versioned.md";
+			await storage.write(path, "Version 1", { history: true });
+			const result = await storage.write(path, "Version 2", { history: true });
+
+			expect(result.previous_version_id).toBeDefined();
+
+			const versions = await storage.getVersions(path);
+			expect(versions).toHaveLength(1);
+			expect(versions[0]!.version_id).toBe(result.previous_version_id);
+			expect(versions[0]!.size).toBe("Version 1".length);
+
+			// The snapshot holds what was replaced, not what replaced it.
+			expect(await storage.getVersion(path, result.previous_version_id!)).toBe("Version 1");
+			expect((await storage.read(path))!.content).toBe("Version 2");
+		});
+
+		it("orders versions newest first", async () => {
+			const path = "test/ordered.md";
+			await storage.write(path, "v1", { history: true });
+			await storage.write(path, "v2", { history: true });
+			await storage.write(path, "v3", { history: true });
+
+			const versions = await storage.getVersions(path);
+			expect(versions).toHaveLength(2);
+			// v2 was superseded most recently, so it comes first.
+			expect(await storage.getVersion(path, versions[0]!.version_id)).toBe("v2");
+			expect(await storage.getVersion(path, versions[1]!.version_id)).toBe("v1");
+		});
+
+		it("honours the limit", async () => {
+			const path = "test/limited.md";
+			for (let i = 0; i < 5; i++) {
+				await storage.write(path, `v${i}`, { history: true });
+			}
+			expect(await storage.getVersions(path, 2)).toHaveLength(2);
+		});
+
+		it("trims the oldest snapshots beyond the retention limit", async () => {
+			const path = "test/retained.md";
+			const retain = 3;
+			for (let i = 0; i < retain + 3; i++) {
+				await storage.write(path, `v${i}`, { history: true, retain });
+			}
+
+			const versions = await storage.getVersions(path, 100);
+			expect(versions).toHaveLength(retain);
+			// The survivors are the newest: v2..v4 were superseded last.
+			const contents = await Promise.all(
+				versions.map((v) => storage.getVersion(path, v.version_id)),
+			);
+			expect(contents).toEqual(["v4", "v3", "v2"]);
+		});
+
+		it("keeps snapshots out of list output", async () => {
+			const path = "test/hidden.md";
+			await storage.write(path, "one", { history: true });
+			await storage.write(path, "two", { history: true });
+			expect(await storage.getVersions(path)).toHaveLength(1);
+
+			// Neither the objects nor a synthetic `_history/` directory entry
+			// may appear, at any depth, or the client sync mirrors them to
+			// disk and the reflection scanner reads them.
+			const everything = await storage.list("", true);
+			expect(everything.some((f) => f.path.startsWith(HISTORY_PREFIX))).toBe(false);
+
+			const root = await storage.list("", false);
+			expect(root.some((f) => f.path.startsWith(HISTORY_PREFIX))).toBe(false);
+		});
+
+		it("never snapshots a snapshot", async () => {
+			// Guards against unbounded `_history/_history/...` nesting if a
+			// caller ever writes straight to a history path.
+			const key = `${HISTORY_PREFIX}test/direct.md/whatever.snap`;
+			await storage.write(key, "one", { history: true });
+			await storage.write(key, "two", { history: true });
+
+			expect(await storage.getVersions(key)).toEqual([]);
+		});
+
+		it("returns null for a version that does not exist", async () => {
+			expect(await storage.getVersion("test/any.md", "nonexistent-version")).toBeNull();
 		});
 	});
 });

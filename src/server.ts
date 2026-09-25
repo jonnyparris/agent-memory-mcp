@@ -19,8 +19,8 @@ import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { getConversationIndex, getMemoryIndex } from "./search/client";
 import { EmptyContentError, indexWrite } from "./search/index-write";
-import { createR2Storage } from "./storage/r2";
-import { extractSnippet, truncateWithMeta } from "./truncate";
+import { HISTORY_RETENTION, createR2Storage } from "./storage/r2";
+import { MAX_READ_LENGTH, extractSnippet, readWindow } from "./truncate";
 import type { Env } from "./types";
 
 /**
@@ -47,14 +47,39 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		server,
 		"read",
 		{
-			description: "Read one file or up to 50 files from memory storage.",
+			description: `Read one file or up to 50 files from memory storage.\n\nA single read returns at most ${MAX_READ_LENGTH} characters. When a file is longer, the response sets \`truncated: true\` and \`next_offset\` — pass that back as \`offset\` to read the next window, and repeat until \`next_offset\` is absent. **Check \`truncated\` before treating a read as the whole file**; appending to a truncated read and writing it back destroys the remainder.`,
 			inputSchema: {
 				path: z
 					.union([z.string(), z.array(z.string())])
 					.describe("File path or array of paths, e.g., 'memory/learnings.md'"),
+				offset: z
+					.number()
+					.optional()
+					.describe(
+						"Character offset to start reading from. Use the `next_offset` from a previous truncated read to continue. Clamped to the file length.",
+					),
+				limit: z
+					.number()
+					.optional()
+					.describe(
+						`Max characters to return, capped at ${MAX_READ_LENGTH}. Applies to every path when reading several.`,
+					),
 			},
 		},
-		async ({ path }: { path: string | string[] }) => {
+		async ({
+			path,
+			offset,
+			limit,
+		}: {
+			path: string | string[];
+			offset?: number;
+			limit?: number;
+		}) => {
+			// Passing either argument marks the caller as paging deliberately,
+			// which suppresses the in-band marker so chunks reassemble cleanly.
+			const paging = offset !== undefined || limit !== undefined;
+			const windowOptions = { offset, limit, marker: !paging };
+
 			if (Array.isArray(path)) {
 				if (path.length > 50) {
 					return errResult("Cannot read more than 50 paths in a single call");
@@ -63,43 +88,67 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					path.map(async (p) => {
 						const file = await storage.read(p);
 						if (!file) return [p, { error: "File not found" }] as const;
-						const t = truncateWithMeta(file.content);
+						const w = readWindow(file.content, windowOptions);
 						const entry: Record<string, unknown> = {
-							content: t.content,
+							content: w.content,
 							updated_at: file.updated_at,
 							size: file.size,
 						};
-						if (t.truncated) {
+						if (w.truncated) {
 							entry.truncated = true;
-							entry.original_size = t.original_size;
+							entry.original_size = w.total_length;
+							entry.next_offset = w.next_offset;
+						}
+						if (paging) {
+							entry.offset = w.offset;
+							entry.returned = w.returned;
+							entry.total_length = w.total_length;
 						}
 						return [p, entry] as const;
 					}),
 				);
 				const found = files.filter(([, v]) => !("error" in v)).length;
-				return okResult({ files: Object.fromEntries(files) }, `Read ${found}/${path.length} files`);
+				const cut = files.filter(([, v]) => "truncated" in v).length;
+				const summary =
+					cut > 0
+						? `Read ${found}/${path.length} files · ${cut} truncated, pass next_offset to continue`
+						: `Read ${found}/${path.length} files`;
+				return okResult({ files: Object.fromEntries(files) }, summary);
 			}
 
 			const file = await storage.read(path);
 			if (!file) {
 				return errResult("File not found", { path });
 			}
-			const t = truncateWithMeta(file.content);
+			const w = readWindow(file.content, windowOptions);
 			// Only surface truncation metadata when truncation actually
 			// happened — keeps the common-case response shape stable for
 			// clients that assert on exact keys.
 			const body: Record<string, unknown> = {
-				content: t.content,
+				content: w.content,
 				updated_at: file.updated_at,
 				size: file.size,
 			};
-			if (t.truncated) {
+			if (w.truncated) {
 				body.truncated = true;
-				body.original_size = t.original_size;
+				// `original_size` predates paging and is characters, not bytes,
+				// despite the name. Kept for callers that already read it;
+				// `total_length` is the honestly-named one.
+				body.original_size = w.total_length;
+				body.next_offset = w.next_offset;
 			}
-			const prefix = t.truncated
-				? `Read ${path} (${t.original_size} bytes, truncated to ${t.content.length})`
-				: `Read ${path} (${file.size} bytes)`;
+			if (paging) {
+				body.offset = w.offset;
+				body.returned = w.returned;
+				body.total_length = w.total_length;
+			}
+
+			const span = paging
+				? `chars ${w.offset}-${w.offset + w.returned} of ${w.total_length}`
+				: `${file.size} bytes`;
+			const prefix = w.truncated
+				? `Read ${path} (${span}) · truncated, pass offset=${w.next_offset} to continue`
+				: `Read ${path} (${span})`;
 			return okResult(body, prefix);
 		},
 	);
@@ -178,6 +227,12 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				tags: result.tags,
 				links: result.links,
 			};
+			// The undo handle for the content this call just destroyed.
+			// Returning it inline means a caller that realises its mistake
+			// one line later can roll back without first calling `history`.
+			if (result.previous_version_id) {
+				response.previous_version_id = result.previous_version_id;
+			}
 			if (result.embedding_error) response.embedding_error = result.embedding_error;
 			if (result.index_deferred) response.index_deferred = true;
 			if (result.index_skipped) {
@@ -200,6 +255,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			}
 
 			const parts = [`Wrote ${path} (${content.length} bytes)`];
+			if (result.previous_version_id) parts.push("previous version kept");
 			if (result.tags.length > 0) parts.push(`tags: ${result.tags.join(", ")}`);
 			if (result.index_deferred) parts.push("index update deferred");
 			if (result.index_skipped) parts.push(`not indexed (${result.index_skipped})`);
@@ -293,6 +349,9 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 							tags: result.tags,
 							links: result.links,
 							bytes: file.content.length,
+							...(result.previous_version_id
+								? { previous_version_id: result.previous_version_id }
+								: {}),
 							...(result.embedding_error ? { embedding_error: result.embedding_error } : {}),
 							...(result.index_deferred ? { index_deferred: true } : {}),
 							...(result.index_skipped ? { index_skipped: result.index_skipped } : {}),
@@ -533,8 +592,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		server,
 		"history",
 		{
-			description:
-				"List previous versions of a file. Requires R2 bucket versioning — returns an empty list (with a hint) if versioning is disabled on the MEMORY_BUCKET.",
+			description: `List previous versions of a file, newest first. Versions are snapshots taken automatically before each \`write\`/\`write_many\` overwrite — R2 itself has no object versioning. Only writes made after this feature shipped have history, and the last ${HISTORY_RETENTION} versions per file are kept.`,
 			inputSchema: {
 				path: z.string().describe("File path"),
 				limit: z.number().optional().default(10).describe("Max versions to return"),
@@ -545,14 +603,10 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			if (versions.length === 0) {
 				return {
 					versions: [],
-					versioning_enabled: false,
-					hint:
-						"No versions returned. This usually means R2 bucket versioning is " +
-						"disabled. Enable it with `wrangler r2 bucket update agent-memory " +
-						"--versioning enabled` to capture history going forward.",
+					hint: `No snapshots for ${path}. Either it has not been overwritten since version history shipped, or it has never existed. History starts at the first overwrite, so the current content is never itself a version.`,
 				};
 			}
-			return { versions, versioning_enabled: true };
+			return { versions };
 		},
 	);
 
@@ -561,7 +615,8 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"rollback",
 		{
 			description:
-				"Restore a file to a previous version. Requires R2 bucket versioning to be enabled.",
+				"Restore a file to a previous version from `history`. The content being " +
+				"replaced is itself snapshotted first, so a rollback can be rolled back.",
 			inputSchema: {
 				path: z.string().describe("File path"),
 				version_id: z.string().describe("Version ID to restore"),
@@ -572,8 +627,18 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			if (!fileContent) {
 				return errResult("Version not found", { path, version_id });
 			}
-			await storage.write(path, fileContent);
-			return { success: true, restored_from: version_id };
+			// Through `indexWrite`, not `storage.write`. A bare write left the
+			// embedding pointing at the content we just discarded, so `search`
+			// kept returning the rolled-back text — and took no snapshot, so
+			// the restore was itself irreversible.
+			const result = await indexWrite(env, storage, path, fileContent, {
+				allowEmpty: true,
+			});
+			return {
+				success: true,
+				restored_from: version_id,
+				previous_version_id: result.previous_version_id,
+			};
 		},
 	);
 
@@ -617,6 +682,76 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				string,
 				unknown
 			>;
+		},
+	);
+
+	registerTool(
+		server,
+		"delete",
+		{
+			description:
+				"Delete a file and remove it from the search index. The content is snapshotted first, so " +
+				"`history`/`rollback` can bring it back. Pass `purge: true` to delete every snapshot as well, " +
+				"for content that must not be kept (leaked credentials). Purge cannot be undone.",
+			inputSchema: {
+				path: z.string().describe("File path"),
+				purge: z
+					.boolean()
+					.default(false)
+					.describe("Also delete all history snapshots. Irreversible."),
+			},
+		},
+		async ({ path, purge }: { path: string; purge?: boolean }) => {
+			const existing = await storage.read(path);
+			if (!existing) return errResult("File not found", { path });
+			const result = await storage.delete(path, purge ? { purgeHistory: true } : { history: true });
+			await getMemoryIndex(env).delete(path);
+			return {
+				success: true,
+				path,
+				purged: purge ?? false,
+				previous_version_id: result.previous_version_id,
+				...(purge ? {} : { hint: "Undo with rollback({ path, version_id })." }),
+			};
+		},
+	);
+
+	registerTool(
+		server,
+		"move",
+		{
+			description:
+				"Move or rename a file. Writes the content to the new path (indexed), then deletes the old path " +
+				"with a snapshot. Refuses to overwrite an existing file unless `overwrite: true`. Returns the " +
+				"files that link to the old path, which you should update to the new one.",
+			inputSchema: {
+				from: z.string().describe("Current path"),
+				to: z.string().describe("New path"),
+				overwrite: z.boolean().default(false).describe("Replace a file already at `to`"),
+			},
+		},
+		async ({ from, to, overwrite }: { from: string; to: string; overwrite?: boolean }) => {
+			if (from === to) return errResult("from and to are the same", { from, to });
+			const source = await storage.read(from);
+			if (!source) return errResult("File not found", { path: from });
+			if (!overwrite && (await storage.read(to))) {
+				return errResult("Destination exists; pass overwrite: true to replace it", { to });
+			}
+			await indexWrite(env, storage, to, source.content, {
+				detectOverlaps: false,
+				allowEmpty: true,
+			});
+			const deleted = await storage.delete(from, { history: true });
+			const index = getMemoryIndex(env);
+			await index.delete(from);
+			const { backlinks } = await index.backlinks(from);
+			return {
+				success: true,
+				from,
+				to,
+				previous_version_id: deleted.previous_version_id,
+				backlinks_to_update: backlinks.filter((b) => b !== to),
+			};
 		},
 	);
 
@@ -950,7 +1085,8 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 							results.push({ path: edit.path, action: edit.action, success: true });
 							break;
 						case "delete":
-							await storage.delete(edit.path);
+							// Snapshot first so an applied deletion can be rolled back.
+							await storage.delete(edit.path, { history: true });
 							await getMemoryIndex(env).delete(edit.path);
 							results.push({ path: edit.path, action: edit.action, success: true });
 							break;

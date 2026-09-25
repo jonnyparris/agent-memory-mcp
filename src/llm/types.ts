@@ -69,6 +69,12 @@ export interface LLMCompletionOptions {
 	systemPrompt?: string;
 	/** Tools available for the LLM to call */
 	tools?: LLMTool[];
+	/**
+	 * Set false to turn off a reasoning model's thinking phase (sent as
+	 * `chat_template_kwargs.thinking`). Used as a fallback when a turn spends
+	 * its whole token budget reasoning and returns nothing.
+	 */
+	thinking?: boolean;
 }
 
 export interface LLMCompletionResult {
@@ -82,6 +88,8 @@ export interface LLMCompletionResult {
 	};
 	/** Tool calls requested by the LLM */
 	toolCalls?: LLMToolCall[];
+	/** Why generation stopped ("stop", "tool_calls", "length", ...). */
+	finishReason?: string;
 }
 
 export interface LLMProvider {

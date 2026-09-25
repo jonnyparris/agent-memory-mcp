@@ -48,8 +48,8 @@ describe("writeStagedReflection", () => {
 		await writeStagedReflection(mockStorage, reflection);
 		const file = await mockStorage.read("memory/reflections/pending/2026-02-04.md");
 
-		expect(file?.content).toContain("Quick Scan Iterations | 3");
-		expect(file?.content).toContain("Deep Analysis Iterations | 7");
+		expect(file?.content).toContain("Deep Analysis Turns |");
+		expect(file?.content).toContain("Deep Analysis Turns | 7");
 	});
 
 	it("should include auto-applied fixes", async () => {

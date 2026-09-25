@@ -6,8 +6,8 @@
  * /v1/chat/completions endpoint.
  *
  * Models with tool calling support:
- * - @cf/moonshotai/kimi-k2.6 (1T params, 262k context, agentic) - PRIMARY
- * - @cf/zai-org/glm-4.7-flash (fast, lightweight) - AUTO-APPLY
+ * - @cf/moonshotai/kimi-k2.6 - avoid: emits tool calls inside reasoning_content
+ * - @cf/deepseek-ai/deepseek-v4-flash-0731 - reflection default (see README)
  * - @cf/meta/llama-3.3-70b-instruct-fp8-fast (proven reliable) - FALLBACK
  * - @cf/qwen/qwq-32b (reasoning model, no tool calling) - LEGACY
  */
@@ -179,6 +179,7 @@ export class WorkersAIProvider implements LLMProvider {
 					}
 				: undefined,
 			toolCalls,
+			finishReason: choice?.finish_reason,
 		};
 	}
 
@@ -202,6 +203,10 @@ export class WorkersAIProvider implements LLMProvider {
 			max_tokens: options?.maxTokens ?? 8192,
 			temperature: options?.temperature ?? 0.7,
 		};
+
+		if (options?.thinking === false) {
+			body.chat_template_kwargs = { thinking: false };
+		}
 
 		if (tools && tools.length > 0) {
 			body.tools = tools;
@@ -314,9 +319,9 @@ export class WorkersAIProvider implements LLMProvider {
 
 /** Model presets for different use cases */
 export const REFLECTION_MODELS = {
-	/** Primary model for deep analysis - highest quality */
-	primary: "@cf/moonshotai/kimi-k2.6",
-	/** Fast model for quick scans and auto-apply */
+	/** Deep analysis. Picked by dry-run comparison 2026-09-25 (see README). */
+	primary: "@cf/deepseek-ai/deepseek-v4-flash-0731",
+	/** Small, cheap model (no longer used by reflection) */
 	fast: "@cf/zai-org/glm-4.7-flash",
 	/** Fallback if primary unavailable */
 	fallback: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",

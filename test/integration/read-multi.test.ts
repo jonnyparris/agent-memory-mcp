@@ -166,4 +166,112 @@ describe("read tool multi-file support", () => {
 
 		expect(Object.keys(content.files)).toEqual(paths);
 	});
+
+	describe("pagination", () => {
+		// A 78K-character learnings.md could not be retrieved in full through
+		// the MCP at all before this: `read` capped at 50K and offered no way
+		// to ask for the rest. Following the documented "read, append, write
+		// back" rule on it silently destroyed 28K.
+		const big = Array.from({ length: 4000 }, (_, i) => `line ${i} of a long memory file`).join(
+			"\n",
+		);
+		const bigPath = "test-tools/read-multi/big.md";
+
+		it("advertises truncation with a usable continuation offset", async () => {
+			await callTool("write", { path: bigPath, content: big, wait_for_index: false });
+
+			const result = await callTool("read", { path: bigPath });
+			const body = parseToolJson(result.result.content[0].text);
+
+			expect(body.truncated).toBe(true);
+			expect(body.original_size).toBe(big.length);
+			expect(body.next_offset).toBeGreaterThan(0);
+			// The in-band marker is the backstop for callers that ignore the
+			// metadata and write the result straight back.
+			expect(body.content).toContain("[Content truncated");
+			expect(result.result.content[0].text).toContain("pass offset=");
+		});
+
+		it("retrieves a file larger than the cap in full by paging", async () => {
+			await callTool("write", { path: bigPath, content: big, wait_for_index: false });
+
+			let offset = 0;
+			let assembled = "";
+			let calls = 0;
+			for (;;) {
+				const result = await callTool("read", { path: bigPath, offset });
+				const body = parseToolJson(result.result.content[0].text);
+				expect(body.content).not.toContain("[Content truncated");
+				assembled += body.content;
+				calls++;
+				expect(calls).toBeLessThan(20);
+				if (body.next_offset === undefined) break;
+				offset = body.next_offset;
+			}
+
+			expect(calls).toBeGreaterThan(1);
+			expect(assembled).toBe(big);
+		});
+
+		it("reports the window position when paging", async () => {
+			await callTool("write", { path: bigPath, content: big, wait_for_index: false });
+
+			const result = await callTool("read", { path: bigPath, offset: 10, limit: 100 });
+			const body = parseToolJson(result.result.content[0].text);
+
+			expect(body.offset).toBe(10);
+			expect(body.returned).toBeLessThanOrEqual(100);
+			expect(body.total_length).toBe(big.length);
+			expect(body.content).toBe(big.slice(10, 10 + body.returned));
+		});
+
+		it("caps limit so a caller cannot demand an oversized response", async () => {
+			await callTool("write", { path: bigPath, content: big, wait_for_index: false });
+
+			const result = await callTool("read", { path: bigPath, limit: 10_000_000 });
+			const body = parseToolJson(result.result.content[0].text);
+
+			expect(body.returned).toBeLessThanOrEqual(50_000);
+			expect(body.truncated).toBe(true);
+		});
+
+		it("applies the window to every path in a multi-read", async () => {
+			await callTool("write", {
+				path: "test-tools/read-multi/page-a.md",
+				content: "aaaaaaaaaa",
+				wait_for_index: false,
+			});
+			await callTool("write", {
+				path: "test-tools/read-multi/page-b.md",
+				content: "bbbbbbbbbb",
+				wait_for_index: false,
+			});
+
+			const result = await callTool("read", {
+				path: ["test-tools/read-multi/page-a.md", "test-tools/read-multi/page-b.md"],
+				offset: 2,
+				limit: 3,
+			});
+			const files = parseToolJson(result.result.content[0].text).files;
+
+			expect(files["test-tools/read-multi/page-a.md"].content).toBe("aaa");
+			expect(files["test-tools/read-multi/page-b.md"].content).toBe("bbb");
+			expect(files["test-tools/read-multi/page-a.md"].next_offset).toBe(5);
+		});
+
+		it("leaves the unpaged small-file response shape untouched", async () => {
+			// Guards the back-compat promise: no new keys appear unless the
+			// caller pages or the read was actually cut short.
+			await callTool("write", {
+				path: "test-tools/read-multi/small.md",
+				content: "tiny",
+				wait_for_index: false,
+			});
+
+			const result = await callTool("read", { path: "test-tools/read-multi/small.md" });
+			const body = parseToolJson(result.result.content[0].text);
+
+			expect(Object.keys(body).sort()).toEqual(["content", "size", "updated_at"]);
+		});
+	});
 });
