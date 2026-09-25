@@ -96,6 +96,8 @@ describe("MCP Tools", () => {
 			expect(toolNames).toContain("history");
 			expect(toolNames).toContain("rollback");
 			expect(toolNames).toContain("prune_index");
+			expect(toolNames).toContain("delete");
+			expect(toolNames).toContain("move");
 		});
 	});
 
@@ -478,6 +480,80 @@ describe("MCP Tools", () => {
 
 			const data = (await response.json()) as McpErrorResult;
 			expect(data.error.code).toBe(-32700);
+		});
+	});
+
+	describe("delete and move tools", () => {
+		const text = (r: McpToolResult) => r.result.content[0]!.text;
+
+		it("deletes with a snapshot that rollback can restore", async () => {
+			const path = "memory/test-delete-me.md";
+			await callTool("write", { path, content: "keep me safe", detect_overlaps: false });
+
+			const del = parseToolJson(text(await callTool("delete", { path })));
+			expect(del.success).toBe(true);
+			expect(del.previous_version_id).toBeTruthy();
+			expect((await callTool("read", { path })).result.isError).toBe(true);
+
+			await callTool("rollback", { path, version_id: del.previous_version_id });
+			expect(text(await callTool("read", { path }))).toContain("keep me safe");
+		});
+
+		it("purge removes the file and every snapshot", async () => {
+			const path = "memory/test-purge-me.md";
+			await callTool("write", { path, content: "v1 secret", detect_overlaps: false });
+			await callTool("write", { path, content: "v2 secret", detect_overlaps: false });
+
+			const del = parseToolJson(text(await callTool("delete", { path, purge: true })));
+			expect(del.purged).toBe(true);
+			const history = parseToolJson(text(await callTool("history", { path })));
+			expect(history.versions).toEqual([]);
+		});
+
+		it("moves a file and reports who links to the old path", async () => {
+			await callTool("write", {
+				path: "memory/test-move-src.md",
+				content: "moving content",
+				detect_overlaps: false,
+			});
+			await callTool("write", {
+				path: "memory/test-move-linker.md",
+				content: "See [[memory/test-move-src]]",
+				detect_overlaps: false,
+			});
+
+			const moved = parseToolJson(
+				text(
+					await callTool("move", { from: "memory/test-move-src.md", to: "memory/moved/dst.md" }),
+				),
+			);
+			expect(moved.success).toBe(true);
+			expect(moved.backlinks_to_update).toContain("memory/test-move-linker.md");
+			expect(text(await callTool("read", { path: "memory/moved/dst.md" }))).toContain(
+				"moving content",
+			);
+			expect((await callTool("read", { path: "memory/test-move-src.md" })).result.isError).toBe(
+				true,
+			);
+		});
+
+		it("refuses to overwrite on move without overwrite: true", async () => {
+			await callTool("write", {
+				path: "memory/test-mv-a.md",
+				content: "a",
+				detect_overlaps: false,
+			});
+			await callTool("write", {
+				path: "memory/test-mv-b.md",
+				content: "b",
+				detect_overlaps: false,
+			});
+			const res = await callTool("move", {
+				from: "memory/test-mv-a.md",
+				to: "memory/test-mv-b.md",
+			});
+			expect(res.result.isError).toBe(true);
+			expect(text(await callTool("read", { path: "memory/test-mv-b.md" }))).toContain("b");
 		});
 	});
 

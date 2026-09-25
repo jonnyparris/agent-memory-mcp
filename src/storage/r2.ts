@@ -44,6 +44,11 @@ export interface WriteOptions {
 	retain?: number;
 }
 
+export interface DeleteOptions {
+	history?: boolean;
+	purgeHistory?: boolean;
+}
+
 export interface WriteResult {
 	version_id?: string;
 	/**
@@ -58,7 +63,13 @@ export interface R2Storage {
 	read(path: string): Promise<MemoryFile | null>;
 	write(path: string, content: string, options?: WriteOptions): Promise<WriteResult>;
 	list(path?: string, recursive?: boolean): Promise<MemoryFileMetadata[]>;
-	delete(path: string): Promise<void>;
+	/**
+	 * Delete a file. With `history`, the content is snapshotted first so
+	 * `rollback` can bring it back. With `purgeHistory`, every existing
+	 * snapshot of the path is removed too (for content that must not be kept,
+	 * like leaked credentials).
+	 */
+	delete(path: string, options?: DeleteOptions): Promise<WriteResult>;
 	getVersions(path: string, limit?: number): Promise<FileVersion[]>;
 	getVersion(path: string, versionId: string): Promise<string | null>;
 }
@@ -242,8 +253,19 @@ export function createR2Storage(bucket: R2Bucket): R2Storage {
 			return files;
 		},
 
-		async delete(path: string): Promise<void> {
+		async delete(path: string, options: DeleteOptions = {}): Promise<WriteResult> {
+			let previousVersionId: string | undefined;
+			if (options.purgeHistory) {
+				const keys = await listHistoryKeys(bucket, path);
+				for (const key of keys) await bucket.delete(key.key);
+			} else if (options.history && !path.startsWith(HISTORY_PREFIX)) {
+				// Unlike a write, a failed snapshot here aborts: deleting
+				// without a copy is exactly the irreversible loss this exists
+				// to prevent, and the caller can simply retry.
+				previousVersionId = await snapshot(bucket, path, HISTORY_RETENTION);
+			}
 			await bucket.delete(path);
+			return { previous_version_id: previousVersionId };
 		},
 
 		async getVersions(path: string, limit = 10): Promise<FileVersion[]> {

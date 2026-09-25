@@ -4,7 +4,7 @@
  */
 
 import { HISTORY_PREFIX } from "../../src/storage/r2";
-import type { R2Storage, WriteOptions, WriteResult } from "../../src/storage/r2";
+import type { DeleteOptions, R2Storage, WriteOptions, WriteResult } from "../../src/storage/r2";
 import type { FileVersion, MemoryFile, MemoryFileMetadata } from "../../src/types";
 
 interface StoredFile {
@@ -124,8 +124,22 @@ export function createMockStorage(): R2Storage & {
 			return results;
 		},
 
-		async delete(path: string): Promise<void> {
+		async delete(path: string, options: DeleteOptions = {}): Promise<WriteResult> {
+			let previousVersionId: string | undefined;
+			const existing = files.get(path);
+			if (options.purgeHistory) {
+				for (const key of [...history.keys()]) {
+					if (key.startsWith(`${path}\u0000`)) history.delete(key);
+				}
+			} else if (options.history && existing) {
+				previousVersionId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${counter++}`;
+				history.set(`${path}\u0000${previousVersionId}`, {
+					content: existing.content,
+					updated_at: new Date().toISOString(),
+				});
+			}
 			files.delete(path);
+			return { previous_version_id: previousVersionId };
 		},
 
 		async getVersions(path: string, limit = 10): Promise<FileVersion[]> {

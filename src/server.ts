@@ -685,6 +685,76 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		},
 	);
 
+	registerTool(
+		server,
+		"delete",
+		{
+			description:
+				"Delete a file and remove it from the search index. The content is snapshotted first, so " +
+				"`history`/`rollback` can bring it back. Pass `purge: true` to delete every snapshot as well, " +
+				"for content that must not be kept (leaked credentials). Purge cannot be undone.",
+			inputSchema: {
+				path: z.string().describe("File path"),
+				purge: z
+					.boolean()
+					.default(false)
+					.describe("Also delete all history snapshots. Irreversible."),
+			},
+		},
+		async ({ path, purge }: { path: string; purge?: boolean }) => {
+			const existing = await storage.read(path);
+			if (!existing) return errResult("File not found", { path });
+			const result = await storage.delete(path, purge ? { purgeHistory: true } : { history: true });
+			await getMemoryIndex(env).delete(path);
+			return {
+				success: true,
+				path,
+				purged: purge ?? false,
+				previous_version_id: result.previous_version_id,
+				...(purge ? {} : { hint: "Undo with rollback({ path, version_id })." }),
+			};
+		},
+	);
+
+	registerTool(
+		server,
+		"move",
+		{
+			description:
+				"Move or rename a file. Writes the content to the new path (indexed), then deletes the old path " +
+				"with a snapshot. Refuses to overwrite an existing file unless `overwrite: true`. Returns the " +
+				"files that link to the old path, which you should update to the new one.",
+			inputSchema: {
+				from: z.string().describe("Current path"),
+				to: z.string().describe("New path"),
+				overwrite: z.boolean().default(false).describe("Replace a file already at `to`"),
+			},
+		},
+		async ({ from, to, overwrite }: { from: string; to: string; overwrite?: boolean }) => {
+			if (from === to) return errResult("from and to are the same", { from, to });
+			const source = await storage.read(from);
+			if (!source) return errResult("File not found", { path: from });
+			if (!overwrite && (await storage.read(to))) {
+				return errResult("Destination exists; pass overwrite: true to replace it", { to });
+			}
+			await indexWrite(env, storage, to, source.content, {
+				detectOverlaps: false,
+				allowEmpty: true,
+			});
+			const deleted = await storage.delete(from, { history: true });
+			const index = getMemoryIndex(env);
+			await index.delete(from);
+			const { backlinks } = await index.backlinks(from);
+			return {
+				success: true,
+				from,
+				to,
+				previous_version_id: deleted.previous_version_id,
+				backlinks_to_update: backlinks.filter((b) => b !== to),
+			};
+		},
+	);
+
 	// ==================== Conversation Tools ====================
 
 	// `search_conversations` remains as a thin compatibility alias over
@@ -1015,7 +1085,8 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 							results.push({ path: edit.path, action: edit.action, success: true });
 							break;
 						case "delete":
-							await storage.delete(edit.path);
+							// Snapshot first so an applied deletion can be rolled back.
+							await storage.delete(edit.path, { history: true });
 							await getMemoryIndex(env).delete(edit.path);
 							results.push({ path: edit.path, action: edit.action, success: true });
 							break;
