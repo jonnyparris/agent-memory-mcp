@@ -339,6 +339,19 @@ describe("executeReflectionTool", () => {
 			expect(context.flaggedIssues[0].issue).toContain("reorganise");
 		});
 
+		it("stages an identical edit only once", async () => {
+			mockStorage._files.set("memory/a.md", { content: "x", updated_at: "2026-01-01T00:00:00Z" });
+			const call = {
+				id: "c",
+				name: "proposeEdit",
+				arguments: { path: "memory/a.md", action: "append", content: "See also", reason: "link" },
+			};
+			await executeReflectionTool(call, context);
+			const second = await executeReflectionTool(call, context);
+			expect(second.success).toBe(true);
+			expect(context.proposedEdits).toHaveLength(1);
+		});
+
 		it("allows a replace that keeps most of the file", async () => {
 			mockStorage._files.set("memory/learnings.md", {
 				content: "x".repeat(1000),

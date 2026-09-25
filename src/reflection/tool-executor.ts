@@ -328,6 +328,21 @@ async function executePropose(
 		};
 	}
 
+	// Models sometimes send the same edit twice. Applying an append twice
+	// would duplicate the text, so a repeat is acknowledged but not staged.
+	const duplicate = context.proposedEdits.some(
+		(e) => e.path === args.path && e.action === args.action && e.content === args.content,
+	);
+	if (duplicate) {
+		return {
+			success: true,
+			result: {
+				message: `Already staged: ${args.action} ${args.path}`,
+				totalProposed: context.proposedEdits.length,
+			},
+		};
+	}
+
 	// Stage the edit
 	context.proposedEdits.push({
 		path: args.path,
@@ -498,10 +513,9 @@ async function executeFlagIssue(
 	if (typeof args?.issue !== "string" || !args.issue.trim()) {
 		return { success: false, error: "issue is required: say what is wrong and what to do" };
 	}
-	context.flaggedIssues.push({
-		path: args.path,
-		issue: args.issue,
-	});
+	if (!context.flaggedIssues.some((f) => f.path === args.path && f.issue === args.issue)) {
+		context.flaggedIssues.push({ path: args.path, issue: args.issue });
+	}
 
 	return {
 		success: true,
