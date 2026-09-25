@@ -50,7 +50,7 @@
 	},
 
 	"vars": {
-		"REFLECTION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+		"REFLECTION_MODEL": "@cf/deepseek-ai/deepseek-v4-flash-0731",
 		"USE_AGENTIC_REFLECTION": "true"
 	}
 }

@@ -206,6 +206,36 @@ describe("runAgenticReflection", () => {
 		expect(firstTools).toContain("readFile");
 	});
 
+	it("forces a final turn once the wall-clock deadline passes", async () => {
+		let t = 0;
+		const clock = () => t;
+		mockLLMComplete.mockImplementation(async () => {
+			t += 4 * 60_000; // every turn takes 4 minutes
+			return {
+				response: "",
+				toolCalls: [{ id: "c", name: "readFile", arguments: { path: "memory/learnings.md" } }],
+			};
+		});
+
+		const result = await runDeepAnalysisOnly(mockEnv, mockStorage, { clock });
+
+		// Turns start at 0, 4, 8 (soft warning sent after), 12 (past hard: final).
+		expect(mockLLMComplete).toHaveBeenCalledTimes(4);
+		expect(result.deepAnalysisFinished).toBe(false);
+		const last = mockLLMComplete.mock.calls[3];
+		const lastUser = [...last[0]].reverse().find((m: { role: string }) => m.role === "user");
+		expect(lastUser.content).toContain("Time is up");
+		expect((last[1].tools as Array<{ name: string }>).map((x) => x.name).sort()).toEqual([
+			"finishReflection",
+			"flagIssue",
+			"proposeEdit",
+		]);
+		const prompts = last[0]
+			.filter((m: { role: string }) => m.role === "user")
+			.map((m: { content: string }) => m.content);
+		expect(prompts.some((p: string) => p.startsWith("Time is nearly up"))).toBe(true);
+	});
+
 	it("does not treat an empty stop as finishing", async () => {
 		mockLLMComplete.mockResolvedValue({ response: "", toolCalls: undefined });
 

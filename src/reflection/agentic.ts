@@ -49,6 +49,15 @@ const WRAP_UP_TURNS = 3;
  */
 const DEEP_ANALYSIS_CONTEXT_CHARS = 400_000;
 
+/**
+ * Wall-clock budget. A cron-triggered Worker gets 15 minutes. The best model
+ * in our comparison (DeepSeek V4 Flash) took 13 minutes for 25 turns, so turn
+ * count alone can't keep a run safe. After the soft deadline the model is told
+ * to wrap up; after the hard deadline its next turn is the final one.
+ */
+export const SOFT_DEADLINE_MS = 8 * 60_000;
+export const HARD_DEADLINE_MS = 10 * 60_000;
+
 /** Empty responses (no text, no tool call) tolerated before giving up. */
 const MAX_EMPTY_STOPS = 2;
 
@@ -121,6 +130,8 @@ export interface ReflectionRunOptions {
 	skipHygiene?: boolean;
 	/** Date used to pick the focus. Defaults to now. */
 	now?: Date;
+	/** Clock for the wall-clock deadline. Tests only. */
+	clock?: () => number;
 }
 
 /**
@@ -147,7 +158,7 @@ export async function runAgenticReflection(
 	}
 
 	const inventory = await buildInventory(storage, focus);
-	const deep = await runDeepAnalysis(env, context, inventory, focus, model);
+	const deep = await runDeepAnalysis(env, context, inventory, focus, model, options.clock);
 
 	return {
 		success: deep.success,
@@ -265,6 +276,10 @@ interface PhaseConfig {
 	maxContextChars: number;
 	maxTokens: number;
 	temperature: number;
+	/** Clock, injectable for tests. */
+	now?: () => number;
+	softDeadlineMs?: number;
+	hardDeadlineMs?: number;
 }
 
 interface PhaseResult {
@@ -292,12 +307,25 @@ async function runPhase(
 	let iterations = 0;
 	let emptyStops = 0;
 	let checkpointSent = false;
+	let deadlineWarned = false;
+	const now = config.now ?? Date.now;
+	const started = now();
+	const softDeadline = config.softDeadlineMs ?? SOFT_DEADLINE_MS;
+	const hardDeadline = config.hardDeadlineMs ?? HARD_DEADLINE_MS;
 	const recordedAtStart = context.proposedEdits.length + context.flaggedIssues.length;
 
 	while (iterations < config.maxIterations) {
 		iterations++;
-		const remaining = config.maxIterations - iterations + 1;
+		const elapsed = now() - started;
+		const pastHard = elapsed >= hardDeadline;
+		const remaining = pastHard ? 1 : config.maxIterations - iterations + 1;
 		const isFinalTurn = remaining === 1;
+		if (pastHard) {
+			messages.push({
+				role: "user",
+				content: `Time is up. This is your final turn. Record any remaining findings with ${config.recordTools}, then call ${config.finishTool}.`,
+			});
+		}
 		const tools = isFinalTurn
 			? config.tools.filter((t) => config.finalTools.has(t.name))
 			: config.tools;
@@ -342,7 +370,7 @@ async function runPhase(
 			// run of reads: finish_reason "stop", no text, no tool call. Counting
 			// it as "finished" turned a model that gave up into "memory looks
 			// good". Ask once more for a real answer before giving up.
-			if (!text && emptyStops < MAX_EMPTY_STOPS && iterations < config.maxIterations) {
+			if (!text && !isFinalTurn && emptyStops < MAX_EMPTY_STOPS) {
 				emptyStops++;
 				console.log(JSON.stringify({ phase: config.phase, event: "empty_stop", emptyStops }));
 				messages.push({
@@ -372,9 +400,17 @@ async function runPhase(
 			return { success: true, iterations, finished: true, finishArgs };
 		}
 
+		if (isFinalTurn) break;
+
 		const left = remaining - 1;
 		const nudge = budgetNudge(left, config.finishTool, config.recordTools);
-		if (nudge) {
+		if (!nudge && !deadlineWarned && now() - started >= softDeadline) {
+			deadlineWarned = true;
+			messages.push({
+				role: "user",
+				content: `Time is nearly up (a couple of turns left). Stop exploring. Record what you found with ${config.recordTools}, then call ${config.finishTool}.`,
+			});
+		} else if (nudge) {
 			messages.push({ role: "user", content: nudge });
 		} else if (
 			!checkpointSent &&
@@ -412,6 +448,7 @@ async function runDeepAnalysis(
 	inventory: string,
 	focus: ReflectionFocus,
 	model: string,
+	clock?: () => number,
 ): Promise<{
 	success: boolean;
 	iterations: number;
@@ -440,6 +477,7 @@ You have ${MAX_DEEP_ANALYSIS_ITERATIONS} turns. Make several tool calls per turn
 		maxContextChars: DEEP_ANALYSIS_CONTEXT_CHARS,
 		maxTokens: 8192,
 		temperature: 0.4,
+		now: clock,
 	});
 
 	let summary = "";

@@ -314,8 +314,8 @@ export class WorkersAIProvider implements LLMProvider {
 
 /** Model presets for different use cases */
 export const REFLECTION_MODELS = {
-	/** Primary model for deep analysis - highest quality */
-	primary: "@cf/moonshotai/kimi-k2.6",
+	/** Deep analysis. Picked by dry-run comparison 2026-09-25 (see README). */
+	primary: "@cf/deepseek-ai/deepseek-v4-flash-0731",
 	/** Fast model for quick scans and auto-apply */
 	fast: "@cf/zai-org/glm-4.7-flash",
 	/** Fallback if primary unavailable */
