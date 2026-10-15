@@ -55,8 +55,8 @@ From the current docs (checked 2026-09):
   `search()` and an Items API (`items.upload`, `uploadAndPoll`, `delete`,
   `list`).
 - **Built-in storage indexes files on upload**, with no sync job to wait for.
-- **Free during open beta**, within limits (Free plan: 100k files per instance,
-  20k queries per month).
+- **Generally available since 2026-10-01. Billing starts 2026-11-01.** See
+  the cost section below.
 
 ## What does not map cleanly
 
@@ -93,12 +93,54 @@ These are the reasons this is a proposal and not a PR that swaps the backend.
    as the query. Hybrid search might actually do better here, but it needs
    measuring.
 8. **Cost and self-hosting story.** The README promises $0–5 a month on the
-   user's own account. AI Search is free in beta, but pricing is "to be
-   announced with 30 days' notice". The 20k queries a month on the Free plan
-   also needs a check against real usage (search, overlap detection,
-   reflection).
+   user's own account. Pricing is now published and fits that promise. See
+   the cost section below.
 9. **Local dev and tests.** The binding needs `remote: true` for
    `wrangler dev`. Unit tests would need a mock in `test/mocks`.
+
+## Cost (updated 2026-10-15)
+
+AI Search went GA on 2026-10-01. Billing starts 2026-11-01
+([limits & pricing](https://developers.cloudflare.com/ai-search/platform/limits-pricing/)).
+
+Included per account, per month: 5M ingestion tokens, 10 GB-month storage,
+1,000 semantic queries, 1,000 full-text queries. Above that:
+
+| Usage | Price |
+| --- | --- |
+| Ingestion | $0.75 per million tokens (counted on final chunks, overlap included) |
+| Storage | $2.00 per GB-month |
+| Semantic, vector, hybrid queries | $0.75 per 1,000 |
+| Full-text queries | $0.10 per 1,000 |
+
+Embedding and reranking on Workers AI are included. They no longer show up
+on the Workers AI bill. Generation and query rewriting are still billed
+separately.
+
+Real usage on the reference deployment (`agent-memory-mcp`,
+2026-09-15 to 2026-10-15):
+
+- **Corpus:** 528 files, about 4.9 MB. About 1.2M tokens, maybe 1.5M with
+  chunk overlap. The backfill fits inside one month's included ingestion.
+- **`MemoryIndex` DO requests:** 2,752 a month, across both scopes. Each
+  search, update, and delete is one request. This is the ceiling on what
+  AI Search would see.
+- **Worst case, all writes:** 2,752 updates × about 2.3k tokens each
+  ≈ 6.3M tokens. Add the backfill and that's about 2.8M tokens over the
+  included amount, so about $2.
+- **Worst case, all searches:** 2,752 hybrid queries, 1,752 over the
+  included amount, so about $1.30.
+- **Storage:** a few MB. Free.
+
+So the real bill lands somewhere between $0 and about $3.50 a month.
+The $0–5 promise holds. Each write sends the whole file again, so write
+volume, not query volume, is the number to watch. The included usage is
+per account, so two deployments on one account (for example
+`agent-memory-mcp` and `agent-memory-mcp-duvland`) share it.
+
+Pricing is no longer a blocker. The other points in the section above
+still apply: tag arrays still can't be filtered, and `$in` still matches
+only scalar values.
 
 ## Suggested shape if we go ahead
 
