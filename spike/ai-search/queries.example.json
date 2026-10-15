@@ -1,0 +1,17 @@
+[
+	{
+		"q": "ABC-123 migration crash-loop on concurrent pods",
+		"kind": "real,exact",
+		"gold": ["memory/learnings/2026-09.md"]
+	},
+	{
+		"q": "how the reflection cron reports no issues",
+		"kind": "real",
+		"gold": ["memory/learnings/reflection-cron-silent-noop.md"]
+	},
+	{
+		"q": "detail that only appears 60 KB into a hub file",
+		"kind": "synthetic,long",
+		"gold": ["memory/workload/journal-archive.md"]
+	}
+]

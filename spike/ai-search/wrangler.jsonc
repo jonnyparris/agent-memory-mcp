@@ -1,0 +1,13 @@
+// Throwaway spike Worker. See spike/ai-search/README.md.
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "agent-memory-aisearch-spike",
+	"main": "worker.ts",
+	"compatibility_date": "2026-10-13",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	// Read-only use: the spike only lists and gets.
+	"r2_buckets": [{ "binding": "MEMORY_BUCKET", "bucket_name": "agent-memory" }],
+	"ai_search_namespaces": [{ "binding": "AI_SEARCH", "namespace": "default" }],
+	"ai": { "binding": "AI" }
+}
