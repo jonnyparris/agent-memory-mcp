@@ -8,9 +8,12 @@
  *                    Add ?dry_run=1 to see what it would do without writing
  *                    anything or sending the chat notification. Dry runs
  *                    also take ?focus=<id> and ?model=<workers-ai model>.
- *   ANY  /mcp      — MCP Streamable HTTP transport, auth required. Serves
+ *   POST /mcp      — MCP Streamable HTTP transport, auth required. Serves
  *                    the full MCP tool surface (read/write/search/etc).
  *                    All responses are JSON-RPC 2.0.
+ *   GET/DELETE /mcp — 405. The server is stateless and has no standalone
+ *                    SSE stream or sessions to delete. See the comment at
+ *                    the route for why this matters.
  *
  * The scheduled handler runs the daily reflection at 6am UTC (see
  * wrangler.jsonc crons). The Durable Object class export wires
@@ -71,6 +74,27 @@ export default {
 
 		// MCP endpoint
 		if (url.pathname === "/mcp") {
+			// Stateless server: no standalone SSE stream (GET) and no sessions to
+			// end (DELETE). The spec lets a server answer 405 here, and clients
+			// then stop asking. Before this, GET got a 200 event stream that
+			// closed as soon as the response was sent. The MCP TS client treats
+			// a closed GET stream as resumable and reconnects after 1s, forever,
+			// with the retry counter reset each time. Every open MCP client cost
+			// ~3,600 requests an hour: 765K requests in 09-15..10-15.
+			if (request.method === "GET" || request.method === "DELETE") {
+				return new Response(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						error: { code: -32000, message: "Method not allowed." },
+						id: null,
+					}),
+					{
+						status: 405,
+						headers: { Allow: "POST", "Content-Type": "application/json" },
+					},
+				);
+			}
+
 			const authResult = await validateAuth(request, env);
 			if (!authResult.authorized) {
 				return unauthorizedResponse(authResult.error!);

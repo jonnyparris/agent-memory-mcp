@@ -304,11 +304,11 @@ Runs entirely within Cloudflare's free tier for personal use:
 |---------|----------------|---------------|------|
 | R2 Storage | 10 GB/month | ~1 MB | $0 |
 | R2 Operations | 10M reads, 1M writes | ~3K reads, ~600 writes | $0 |
-| Workers | 10M requests/month | ~6K | $0 |
+| Workers | 10M requests/month | ~5K for the hourly sync, plus a few per agent session and tool call | $0 |
 | Workers AI | 10K neurons/day | embeddings + nightly reflection | $0-5 |
 | Durable Objects | 100K requests/day | ~200 | $0 |
 
-**Total: $0-5/month.** Embeddings fit in the free tier. The nightly reflection with the default model can go past it; switch `REFLECTION_MODEL` to Gemma 4 to stay close to free.
+**Total: $0-5/month.** Until 2026-10-15 the Worker answered `GET /mcp` with an event stream that closed at once. MCP clients reconnected every second while open, which came to 765K requests in one month. It now answers 405, so an idle client costs nothing. Embeddings fit in the free tier. The nightly reflection with the default model can go past it; switch `REFLECTION_MODEL` to Gemma 4 to stay close to free.
 
 ---
 
