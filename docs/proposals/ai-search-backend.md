@@ -1,6 +1,7 @@
 # Proposal: use Cloudflare AI Search for the search index
 
-Status: **proposal, for discussion.** Nothing in this PR changes runtime behaviour.
+Status: **spike done (2026-10-15). Verdict: no-go for now.** Nothing in this PR
+changes runtime behaviour. See [Spike results](#spike-results-2026-10-15).
 
 ## Summary
 
@@ -10,8 +11,12 @@ SQLite. This document asks whether [Cloudflare AI Search](https://developers.clo
 should replace the vector part of that stack, while tags and wikilinks stay in
 the Durable Object.
 
-My recommendation: run a time-boxed spike behind a flag. Measure recall on a
-fixed set of queries. Decide after that. Do not do a big-bang migration.
+The original recommendation was to run a time-boxed spike before deciding.
+The spike is done. AI Search finds the right file far more often than the
+current index. But almost all of that gain comes from chunking and keyword
+search, and we can build both inside the Durable Object. AI Search also takes
+over two minutes to make a new file searchable by vector, which breaks
+overlap detection on write. So: don't migrate. Fix the current index instead.
 
 ## What we have now
 
@@ -142,6 +147,140 @@ Pricing is no longer a blocker. The other points in the section above
 still apply: tag arrays still can't be filtered, and `$in` still matches
 only scalar values.
 
+## Spike results (2026-10-15)
+
+The harness is in [`spike/ai-search/`](../../spike/ai-search/). The query set
+and raw results name people and tickets, so they are kept out of this repo.
+
+### Setup
+
+- One AI Search instance with built-in storage, `@cf/baai/bge-m3` (the same
+  model as today), default chunking (256 tokens, 10 overlap), hybrid with RRF.
+  Two custom metadata fields: `path` and `mtime`.
+- Corpus: everything the memory-scope index would hold. That's the R2 bucket
+  minus `conversations/`, `_history/`, and the `indexable.ts` denylist:
+  **242 files, 3.0 MB**. The cost section above counted 528 files and 4.9 MB.
+  That was the whole bucket, so the real cost is lower than estimated.
+- 236 files uploaded. 6 were held back by the credential gate. 2 were flagged,
+  and for 4 the gate returned no answer. The spike fails closed, production
+  fails open. The upload made 4,338 chunks and took about 5 minutes to index.
+- **42 queries.** 30 are real queries taken from agent session history. 12 are
+  written by hand. 10 of them depend on exact terms (ticket keys, hostnames,
+  tool names). 6 have their answer more than 20,000 characters into a large
+  hub file. Each query has a set of files that count as a correct answer.
+- Baseline: the live index, called through the MCP `search` tool with
+  `limit: 10`.
+- "No-go path" baselines run offline with the same bge-m3 call
+  (`spike/ai-search/offline.py`).
+
+### Recall
+
+A query is a hit at k when any correct file is in the top k.
+
+| System | R@1 | R@5 | MRR@10 |
+| --- | --- | --- | --- |
+| **HNSW, live (today)** | 0.41 | **0.55** | 0.46 |
+| Exact cosine, whole file (what HNSW should return) | 0.57 | 0.69 | 0.63 |
+| Exact cosine, 1,500-char chunks, best chunk per file | 0.81 | 0.95 | 0.86 |
+| BM25 over files (an FTS5 stand-in) | 0.86 | 0.95 | 0.91 |
+| **Chunks + BM25, fused with RRF** | 0.88 | **0.95** | **0.91** |
+| AI Search `vector` | 0.79 | 0.98 | 0.86 |
+| AI Search `hybrid` (keyword AND, the default) | 0.76 | 0.95 | 0.84 |
+| **AI Search `hybrid`, keyword OR** | 0.86 | **0.95** | **0.91** |
+| AI Search `hybrid` + `bge-reranker-base` | 0.79 | 0.95 | 0.86 |
+| AI Search `hybrid` OR + reranker | 0.79 | 0.95 | 0.86 |
+
+By query type (R@5):
+
+| Slice | HNSW | Chunks + BM25 | AI Search hybrid OR |
+| --- | --- | --- | --- |
+| Exact terms (n=10) | 0.40 | 1.00 | 1.00 |
+| Answer deep in a long file (n=6) | 0.17 | 1.00 | 1.00 |
+| Real queries (n=30) | 0.50 | 0.97 | 0.97 |
+
+What this tells us:
+
+1. **The current index has a graph bug.** An exact scan over the same vectors
+   gets R@5 0.69. The HNSW graph gets 0.55. On three of the misses, a
+   tag-filtered search (which does an exact scan) scored the right file at
+   0.69 to 0.73. The unfiltered HNSW search never returned it, and its top hit
+   scored about 0.50. So the graph is not finding nearest neighbours that are
+   there. The live index also returned at least one path that is no longer in
+   R2, so stale vectors are not being pruned.
+2. **Chunking is the biggest win.** It moves R@5 from 0.69 to 0.95 with the
+   same model. Every long-file query is found once files are chunked.
+3. **Keyword search fixes exact terms.** It adds about 5 MRR points over
+   chunks alone.
+4. **AI Search doesn't beat a local chunk + BM25 index.** Its best mode
+   (hybrid with keyword OR) ties chunks + BM25 on R@5 and MRR. The default
+   keyword AND mode is slightly worse. The reranker made R@1 worse and added
+   about 800 ms.
+
+Caveats. One person labelled the answer sets, partly by searching the corpus
+for the key terms. That favours keyword methods, so BM25 probably looks better
+than it would on vaguer queries. 42 queries is small: each query is worth
+about 2.4 points. The one vague query ("how should I prepare a 1-1") failed
+on every system.
+
+### Write latency
+
+Today a write is searchable in about 1 to 3 seconds.
+
+| Measure (2 KB to 40 KB files) | Result |
+| --- | --- |
+| `uploadAndPoll`, 120 s timeout | 5 of 6 timed out with the item still `running`. 1 finished at 103 s. |
+| `upload()`, then search until the file is returned by keyword | 23 to 26 s (5 runs) |
+| `upload()`, then search until the file is returned by vector | 136 to 162 s (5 runs) |
+
+The item status often still says `running` after the file is already
+searchable, so `uploadAndPoll` is not a good readiness signal either. Overlap
+detection on write cannot wait 2 minutes. We would have to make it
+asynchronous, or do it in the DO, and either way the `write` tool response
+changes. This alone is a no-go.
+
+### `$in` filter (the tag workaround)
+
+- Built-in `filename` is the **base name**, not the full key. Four base names
+  already appear twice in the corpus (`about-me.md`, `2026-08.md`,
+  `README.md`, and one research file). So we'd need our own `path` field,
+  which uses one of the 5 custom slots.
+- A filter value longer than 64 bytes is **rejected** (`String must contain at
+  most 64 UTF-8 byte(s)`), not cut short. 28 of 236 paths are longer than
+  that. Sending the first 64 bytes works. We'd then filter on the full path
+  ourselves, because two paths can share the same first 64 bytes.
+- Size limits. Keyword search allows **at most 40 values**, and says so in its
+  error. Vector search fails somewhere between 70 and 80 short values, which
+  looks like a byte limit of about 2 KB on the filter. With real paths that's
+  about 40 values too. With 41 to 70 values in hybrid mode, the keyword half
+  fails **silently** and you get vector-only results. 200 and 2,000 values
+  fail outright.
+- Today's largest tag has 17 files, and tag-filtered queries on four tags
+  (6 to 17 files) returned only files from the tag. So it works for now, but
+  any tag over about 40 files would have to be split into several searches
+  and merged.
+
+### Decision
+
+**No-go.** The go criteria were: hybrid beats HNSW on recall clearly, *and*
+write latency is acceptable. The first holds against today's HNSW, but not
+against a fixed local index. The second fails. The tag workaround holds only
+until a tag passes about 40 files.
+
+Do this instead, in order:
+
+1. **Replace HNSW with an exact scan.** At about 240 files and 2,300 chunks,
+   a full cosine scan is about 2.4M multiply-adds per query, which takes
+   milliseconds. This fixes the graph bug and removes `hnsw.ts`.
+2. **Chunk files** (about 1,500 characters with 10% overlap). Store one vector
+   per chunk and score each file by its best chunk. Drop `MAX_EMBED_CHARS`.
+3. **Add an FTS5 table over chunks** and fuse it with vector results using RRF
+   (k = 60). Keep the current `{ id: path, score }` return shape.
+4. **Re-tune the overlap threshold** (0.72 today) against chunk scores.
+5. **Prune vectors whose path is no longer in R2.**
+
+Look at AI Search again if vector visibility after a write drops below about
+5 seconds, or if the `$in` limits go up.
+
 ## Suggested shape if we go ahead
 
 - Keep `MemoryIndex` as the owner of tags, wikilinks, and the
@@ -176,6 +315,9 @@ worth doing: chunk long files, and add a SQLite FTS5 keyword path next to the
 HNSW graph.
 
 ## Open questions
+
+These were asked before the spike. The no-go means they don't need an answer
+now.
 
 - Is storing every memory twice (R2 + AI Search storage) acceptable for a
   personal memory store, or should we wait for faster R2 data-source sync?
