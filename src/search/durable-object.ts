@@ -1,21 +1,59 @@
 import { DurableObject } from "cloudflare:workers";
 import { backlinkTargetVariants } from "../wikilinks";
-import { EMBEDDING_DIMENSIONS, generateEmbedding } from "./embeddings";
-import { HNSWIndex, cosineSimilarity } from "./hnsw";
+import { chunkText } from "./chunking";
+import { generateEmbedding, generateEmbeddings } from "./embeddings";
+import { FTS_TOKENIZE, buildFtsQuery, reciprocalRankFusion } from "./fts";
 import { indexSkipReason } from "./indexable";
+import { blobToVector, dot, legacyBlobToVector, normalise, vectorToBlob } from "./vectors";
 
 interface DOEnv {
 	AI: Ai;
 }
 
 /**
- * Largest tag-filtered candidate set scored by exact scan.
+ * How many files each retriever (vector, keyword) contributes to fusion.
  *
- * Beyond this the scan would deserialise most of the index on every query, so
- * broad tags fall back to approximate search with an over-fetch. Tags in
- * practice select tens of files, well under the threshold.
+ * Matches the spike harness. Deeper lists change little: RRF weight at rank
+ * 50 is already under half the weight at rank 1.
  */
-const EXACT_SCAN_MAX_CANDIDATES = 2000;
+const FUSION_CANDIDATES = 50;
+
+/** Keyword hits are per chunk, so over-fetch rows to get enough distinct files. */
+const FTS_ROW_LIMIT = 500;
+
+/** Bumped when the table layout changes. Stored in the `meta` table. */
+const SCHEMA_VERSION = 2;
+
+/** Reason recorded by `prune` for paths the caller reports as gone from storage. */
+export const MISSING_FROM_STORAGE = "missing from storage";
+
+/**
+ * Retrieval mode for `search`.
+ *
+ * - `hybrid` (default): best-chunk cosine and FTS5 BM25, fused with RRF.
+ *   `score` is the normalised RRF score; `similarity` carries the cosine.
+ * - `vector`: best-chunk cosine only. `score` is the cosine similarity, so
+ *   thresholds tuned on cosine (overlap detection) stay meaningful.
+ */
+export type SearchMode = "hybrid" | "vector";
+
+/** One search hit. `similarity` is the best chunk's cosine with the query. */
+export interface IndexHit {
+	id: string;
+	score: number;
+	similarity?: number;
+}
+
+/** One indexed file, as reported by `indexedPaths`. */
+export interface IndexedPath {
+	path: string;
+	/**
+	 * `true` for files still carrying a single whole-file vector migrated from
+	 * the pre-chunking index. They are searchable by vector but have no
+	 * keyword entry until `reindex` rewrites them.
+	 */
+	legacy: boolean;
+}
 
 /** Outcome of a `prune` run. */
 export interface PruneResult {
@@ -47,81 +85,195 @@ export interface MemoryIndexRpc {
 		limit?: number;
 		timeWeight?: boolean;
 		tags?: string[];
-	}): Promise<Array<{ id: string; score: number }>>;
+		mode?: SearchMode;
+	}): Promise<IndexHit[]>;
 	delete(path: string): Promise<{ success: true }>;
-	prune(args?: { dryRun?: boolean }): Promise<PruneResult>;
-	stats(): Promise<{ indexed_files: number; index_size: number }>;
+	prune(args?: { dryRun?: boolean; missing?: string[] }): Promise<PruneResult>;
+	indexedPaths(): Promise<{ paths: IndexedPath[] }>;
+	stats(): Promise<IndexStats>;
 	tags(): Promise<{ tags: Array<{ tag: string; count: number }> }>;
 	filesWithTags(tags: string[]): Promise<{ paths: string[] }>;
 	backlinks(target: string): Promise<{ backlinks: string[] }>;
 }
 
+export interface IndexStats {
+	indexed_files: number;
+	/** Files held in the in-memory vector cache. Equals `indexed_files` when healthy. */
+	index_size: number;
+	/** Chunk vectors across all files. */
+	chunks: number;
+	/** Files still on a migrated whole-file vector. See `IndexedPath.legacy`. */
+	legacy_files: number;
+}
+
 /**
  * Durable Object for managing the memory search index.
  *
+ * Search is an exact scan plus keyword search, fused:
+ *
+ * - **Vectors.** Each file is split into overlapping chunks (`./chunking`) and
+ *   every chunk gets a bge-m3 vector. A query is scored against every chunk
+ *   with a dot product, and a file scores as its best chunk. This replaced a
+ *   hand-rolled HNSW graph that missed neighbours that were there: on the
+ *   spike query set an exact scan over the same whole-file vectors got
+ *   recall@5 0.69 against 0.55 from the graph. At a few thousand chunks a full
+ *   scan is a few million multiply-adds, a few milliseconds.
+ * - **Keywords.** The same chunks go into an FTS5 table, ranked with BM25.
+ * - **Fusion.** The two ranked file lists are merged with Reciprocal Rank
+ *   Fusion. On the spike set this scored recall@5 0.95 and MRR 0.93.
+ *
  * Exposes RPC methods (preferred) and a legacy fetch() handler that mirrors
  * the RPC surface over HTTP-shaped Requests. Both entry points share the same
- * underlying SQLite tables and HNSW index.
+ * SQLite tables and vector cache.
  */
 export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc {
-	private hnsw: HNSWIndex | null = null;
-	private initialized = false;
+	/** Unit-length chunk vectors per path, loaded from SQLite on first use. */
+	private vectors: Map<string, Float32Array[]> | null = null;
 
 	// ---- initialization --------------------------------------------------
 
-	private async ensureReady(): Promise<HNSWIndex> {
-		if (this.initialized && this.hnsw) return this.hnsw;
+	private async ensureReady(): Promise<Map<string, Float32Array[]>> {
+		if (this.vectors) return this.vectors;
+		const sql = this.ctx.storage.sql;
 
-		this.ctx.storage.sql.exec(`
-			CREATE TABLE IF NOT EXISTS memories (
+		// One row per indexed file. `legacy` marks files whose only vector was
+		// migrated from the whole-file index (see `migrateFromV1`).
+		sql.exec(`
+			CREATE TABLE IF NOT EXISTS files (
 				path TEXT PRIMARY KEY,
-				embedding BLOB NOT NULL,
-				updated_at INTEGER NOT NULL
+				updated_at INTEGER NOT NULL,
+				legacy INTEGER NOT NULL DEFAULT 0
 			)
 		`);
+
+		// One row per chunk. `embedding` is a unit-length float32 vector.
+		// `text` is NULL only for migrated legacy vectors, whose source text
+		// was never stored.
+		sql.exec(`
+			CREATE TABLE IF NOT EXISTS chunks (
+				path TEXT NOT NULL,
+				idx INTEGER NOT NULL,
+				text TEXT,
+				embedding BLOB NOT NULL,
+				PRIMARY KEY (path, idx)
+			)
+		`);
+
+		// Keyword index over chunk text. Standalone (it keeps its own copy of
+		// the text) because the corpus is a few MB and an external-content
+		// table would need triggers to stay in sync.
+		sql.exec(`
+			CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+				text,
+				path UNINDEXED,
+				idx UNINDEXED,
+				tokenize = '${FTS_TOKENIZE}'
+			)
+		`);
+
+		sql.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
 		// Tag index. Populated lazily by `write` via `update`.
 		// (path, tag) is the primary key so the same tag on the same file
 		// is idempotent across repeated writes.
-		this.ctx.storage.sql.exec(`
+		sql.exec(`
 			CREATE TABLE IF NOT EXISTS file_tags (
 				path TEXT NOT NULL,
 				tag TEXT NOT NULL,
 				PRIMARY KEY (path, tag)
 			)
 		`);
-		this.ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag)");
+		sql.exec("CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag)");
 
 		// Outgoing wikilink index. `source` is the file that contains the
 		// link; `target` is the raw link text from inside [[...]]. Indexed on
 		// `target` so backlink queries are a single lookup.
-		this.ctx.storage.sql.exec(`
+		sql.exec(`
 			CREATE TABLE IF NOT EXISTS file_links (
 				source TEXT NOT NULL,
 				target TEXT NOT NULL,
 				PRIMARY KEY (source, target)
 			)
 		`);
-		this.ctx.storage.sql.exec(
-			"CREATE INDEX IF NOT EXISTS idx_file_links_target ON file_links(target)",
-		);
+		sql.exec("CREATE INDEX IF NOT EXISTS idx_file_links_target ON file_links(target)");
 
-		const hnsw = new HNSWIndex(EMBEDDING_DIMENSIONS);
-		const cursor = this.ctx.storage.sql.exec("SELECT path, embedding, updated_at FROM memories");
-		for (const row of cursor) {
-			try {
-				const raw = row.embedding as ArrayBuffer | Uint8Array;
-				const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-				const embedding = JSON.parse(new TextDecoder().decode(bytes));
-				hnsw.insert(row.path as string, embedding);
-			} catch (e) {
-				console.error(`Failed to load embedding for ${row.path}:`, e);
-			}
+		const version = Number(
+			[...sql.exec<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")][0]
+				?.value ?? 0,
+		);
+		if (version < SCHEMA_VERSION) {
+			this.ctx.storage.transactionSync(() => {
+				this.migrateFromV1();
+				sql.exec(
+					"INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+					String(SCHEMA_VERSION),
+				);
+			});
 		}
 
-		this.hnsw = hnsw;
-		this.initialized = true;
-		return hnsw;
+		const vectors = new Map<string, Float32Array[]>();
+		const cursor = sql.exec<{ path: string; embedding: ArrayBuffer }>(
+			"SELECT path, embedding FROM chunks ORDER BY path, idx",
+		);
+		for (const row of cursor) {
+			const list = vectors.get(row.path);
+			const v = blobToVector(row.embedding);
+			if (list) list.push(v);
+			else vectors.set(row.path, [v]);
+		}
+
+		this.vectors = vectors;
+		return vectors;
+	}
+
+	/**
+	 * Carry vectors over from the pre-chunking `memories` table.
+	 *
+	 * Each old whole-file vector becomes chunk 0 of a `legacy` file, so search
+	 * keeps working straight after deploy, before anything is re-embedded.
+	 * Legacy files have no keyword entry (the old table never stored text);
+	 * `reindex` re-embeds them from storage.
+	 *
+	 * The `memories` table is left in place, not dropped, so rolling the
+	 * deploy back finds the old index intact. It is no longer read or written.
+	 */
+	private migrateFromV1(): void {
+		const sql = this.ctx.storage.sql;
+		const hasOld = [
+			...sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'"),
+		].length;
+		if (!hasOld) return;
+		const rows = sql.exec<{ path: string; embedding: ArrayBuffer; updated_at: number }>(
+			"SELECT path, embedding, updated_at FROM memories",
+		);
+		for (const row of rows) {
+			let vector: Float32Array;
+			try {
+				vector = legacyBlobToVector(row.embedding);
+			} catch (e) {
+				console.error(`Skipping unreadable legacy vector for ${row.path}:`, e);
+				continue;
+			}
+			sql.exec(
+				"INSERT OR IGNORE INTO files (path, updated_at, legacy) VALUES (?, ?, 1)",
+				row.path,
+				row.updated_at,
+			);
+			sql.exec(
+				"INSERT OR IGNORE INTO chunks (path, idx, text, embedding) VALUES (?, 0, NULL, ?)",
+				row.path,
+				vectorToBlob(vector),
+			);
+		}
+	}
+
+	/** Remove every trace of `path` from the vector and keyword tables. */
+	private dropVectors(path: string): void {
+		const sql = this.ctx.storage.sql;
+		sql.exec("DELETE FROM files WHERE path = ?", path);
+		sql.exec("DELETE FROM chunks WHERE path = ?", path);
+		sql.exec("DELETE FROM chunks_fts WHERE path = ?", path);
+		this.vectors?.delete(path);
 	}
 
 	// ---- RPC methods (preferred) ----------------------------------------
@@ -132,7 +284,7 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		tags?: string[];
 		links?: string[];
 	}): Promise<{ success: true }> {
-		const hnsw = await this.ensureReady();
+		const vectors = await this.ensureReady();
 		const { path, content, tags, links } = args;
 
 		// Tags and links are committed before the embedding call, which is the
@@ -172,18 +324,29 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 			}
 		}
 
-		const { vector } = await generateEmbedding(this.env.AI, content);
+		// Embed every chunk before touching the stored ones. If Workers AI
+		// fails part-way, the file keeps its previous vectors rather than
+		// ending up half-indexed.
+		const pieces = chunkText(content);
+		const embedded = await generateEmbeddings(this.env.AI, pieces);
+		const unit = embedded.map((e) => normalise(e.vector));
 
-		const embeddingBlob = new TextEncoder().encode(JSON.stringify(vector));
-		this.ctx.storage.sql.exec(
-			"INSERT OR REPLACE INTO memories (path, embedding, updated_at) VALUES (?, ?, ?)",
-			path,
-			embeddingBlob,
-			Date.now(),
-		);
-
-		if (hnsw.size() > 0) hnsw.delete(path);
-		hnsw.insert(path, vector);
+		this.ctx.storage.transactionSync(() => {
+			this.dropVectors(path);
+			const sql = this.ctx.storage.sql;
+			sql.exec("INSERT INTO files (path, updated_at, legacy) VALUES (?, ?, 0)", path, Date.now());
+			pieces.forEach((text, idx) => {
+				sql.exec(
+					"INSERT INTO chunks (path, idx, text, embedding) VALUES (?, ?, ?, ?)",
+					path,
+					idx,
+					text,
+					vectorToBlob(unit[idx]),
+				);
+				sql.exec("INSERT INTO chunks_fts (text, path, idx) VALUES (?, ?, ?)", text, path, idx);
+			});
+		});
+		if (unit.length > 0) vectors.set(path, unit);
 
 		return { success: true };
 	}
@@ -193,121 +356,133 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		limit?: number;
 		timeWeight?: boolean;
 		tags?: string[];
-	}): Promise<Array<{ id: string; score: number }>> {
-		const hnsw = await this.ensureReady();
-		const { query, limit = 5, timeWeight = true, tags } = args;
+		mode?: SearchMode;
+	}): Promise<IndexHit[]> {
+		const vectors = await this.ensureReady();
+		const { query, limit = 5, timeWeight = true, tags, mode = "hybrid" } = args;
 
 		const { vector } = await generateEmbedding(this.env.AI, query);
+		const q = normalise(vector);
 
-		// Tag filters are resolved before scoring, not after.
-		//
-		// Post-filtering HNSW output meant asking the graph for `limit * 10`
-		// candidates and discarding untagged ones, so a tagged file that
-		// didn't crack the global top-N was invisible however well it matched.
-		// In practice `search("lessons learned", tags: ["core"])` missed
-		// learnings.md entirely and returned a single result for other
-		// queries. Scoring the tagged set directly is exact, and for the set
-		// sizes tags produce it is also cheaper than an over-fetch.
-		const tagFilter = tags && tags.length > 0 ? this.resolveTagIntersection(tags) : null;
+		// Tag filters are resolved before scoring, not after, so a tagged file
+		// that would rank outside the global top-N is still found.
+		const allowed = tags && tags.length > 0 ? this.resolveTagIntersection(tags) : null;
 
-		if (tagFilter) {
-			// Guard against a tag so broad that an exact scan would mean
-			// deserialising most of the index. Above the threshold, fall back
-			// to the approximate path with a generous over-fetch.
-			if (tagFilter.size <= EXACT_SCAN_MAX_CANDIDATES) {
-				const scored = this.exactScan(vector, tagFilter);
-				return this.rankResults(scored, limit, timeWeight);
+		const similarity = new Map<string, number>();
+		for (const [path, chunks] of vectors) {
+			if (allowed && !allowed.has(path)) continue;
+			let best = Number.NEGATIVE_INFINITY;
+			for (const c of chunks) {
+				const s = dot(q, c);
+				if (s > best) best = s;
 			}
-			const overshoot = hnsw.search(vector, limit * 10);
+			similarity.set(path, best);
+		}
+		const byVector = [...similarity.entries()].sort((a, b) => b[1] - a[1]);
+
+		if (mode === "vector") {
 			return this.rankResults(
-				overshoot.filter((r) => tagFilter.has(r.id)),
+				byVector.map(([id, score]) => ({ id, score, similarity: score })),
 				limit,
 				timeWeight,
 			);
 		}
 
-		const rawResults = hnsw.search(vector, timeWeight ? limit * 3 : limit);
-		return this.rankResults(rawResults, limit, timeWeight);
+		const vectorList = byVector.slice(0, FUSION_CANDIDATES).map(([id]) => id);
+		const keywordList = this.keywordSearch(query, allowed);
+		const fused = reciprocalRankFusion([vectorList, keywordList]).map((r) => ({
+			...r,
+			similarity: similarity.get(r.id),
+		}));
+		return this.rankResults(fused, limit, timeWeight);
 	}
 
 	/**
-	 * Score `query` against a specific set of paths, exactly.
+	 * Rank files by BM25 over their chunks, best chunk per file.
 	 *
-	 * Reads each candidate's stored embedding and computes cosine similarity
-	 * directly, bypassing the graph. Exact by construction, so no candidate
-	 * can be missed because of where it sits in the HNSW topology.
+	 * Returns at most `FUSION_CANDIDATES` paths. A malformed MATCH expression
+	 * is logged and treated as no keyword hits, so the vector half still
+	 * answers. `buildFtsQuery` quotes every term, so this should not happen.
 	 */
-	private exactScan(query: number[], allowed: Set<string>): Array<{ id: string; score: number }> {
-		const scored: Array<{ id: string; score: number }> = [];
-		const cursor = this.ctx.storage.sql.exec<{ path: string; embedding: ArrayBuffer | Uint8Array }>(
-			"SELECT path, embedding FROM memories",
-		);
-
-		for (const row of cursor) {
-			if (!allowed.has(row.path)) continue;
-			try {
-				const raw = row.embedding;
-				const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-				const embedding = JSON.parse(new TextDecoder().decode(bytes)) as number[];
-				scored.push({ id: row.path, score: cosineSimilarity(query, embedding) });
-			} catch (e) {
-				console.error(`Failed to score ${row.path} during exact scan:`, e);
+	private keywordSearch(query: string, allowed: Set<string> | null): string[] {
+		const match = buildFtsQuery(query);
+		if (!match) return [];
+		const out: string[] = [];
+		const seen = new Set<string>();
+		try {
+			const rows = this.ctx.storage.sql.exec<{ path: string }>(
+				"SELECT path FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?",
+				match,
+				FTS_ROW_LIMIT,
+			);
+			for (const row of rows) {
+				if (seen.has(row.path) || (allowed && !allowed.has(row.path))) continue;
+				seen.add(row.path);
+				out.push(row.path);
+				if (out.length >= FUSION_CANDIDATES) break;
 			}
+		} catch (e) {
+			console.error(`Keyword search failed for ${JSON.stringify(match)}:`, e);
 		}
-
-		return scored;
+		return out;
 	}
 
 	/**
 	 * Apply optional recency weighting and truncate to `limit`.
 	 *
-	 * Shared by the approximate and exact paths so both rank identically.
+	 * Shared by the vector and hybrid paths so both rank identically.
+	 *
+	 * Only the top `limit * 3` candidates by relevance are re-weighted, as
+	 * before. Weighting the whole list would let a fresh but weak match
+	 * overtake strong old ones purely on age.
 	 */
-	private rankResults(
-		results: Array<{ id: string; score: number }>,
-		limit: number,
-		timeWeight: boolean,
-	): Array<{ id: string; score: number }> {
-		if (!timeWeight) {
-			return [...results].sort((a, b) => b.score - a.score).slice(0, limit);
-		}
+	private rankResults(results: IndexHit[], limit: number, timeWeight: boolean): IndexHit[] {
+		const sorted = [...results].sort((a, b) => b.score - a.score);
+		if (!timeWeight) return sorted.slice(0, limit);
 
 		// Exponential decay rerank: weight = 0.5^(age/halfLife) with a
 		// 30-day half-life. 30% base score + 70% time-decayed so a
 		// perfectly-matching stale file still beats a poor fresh one.
 		const now = Date.now();
 		const halfLifeMs = 30 * 24 * 60 * 60 * 1000;
+		const candidates = sorted.slice(0, limit * 3);
+		if (candidates.length === 0) return [];
 
-		return results
+		// One lookup per candidate. A single `IN (...)` would be tidier, but DO
+		// SQLite caps bound parameters at 100 and `limit * 3` can exceed it.
+		const updatedAt = new Map<string, number>();
+		for (const c of candidates) {
+			const row = [
+				...this.ctx.storage.sql.exec<{ updated_at: number }>(
+					"SELECT updated_at FROM files WHERE path = ?",
+					c.id,
+				),
+			][0];
+			if (row) updatedAt.set(c.id, row.updated_at);
+		}
+
+		return candidates
 			.map((r) => {
-				const row = [
-					...this.ctx.storage.sql.exec<{ updated_at: number }>(
-						"SELECT updated_at FROM memories WHERE path = ?",
-						r.id,
-					),
-				][0];
-				const updatedAt = row?.updated_at ?? now;
-				const ageMs = now - updatedAt;
+				const ageMs = now - (updatedAt.get(r.id) ?? now);
 				const timeDecay = 0.5 ** (ageMs / halfLifeMs);
-				const adjustedScore = r.score * (0.3 + 0.7 * timeDecay);
-				return { id: r.id, adjustedScore };
+				return { ...r, score: r.score * (0.3 + 0.7 * timeDecay) };
 			})
-			.sort((a, b) => b.adjustedScore - a.adjustedScore)
-			.slice(0, limit)
-			.map((r) => ({ id: r.id, score: r.adjustedScore }));
+			.sort((a, b) => b.score - a.score)
+			.slice(0, limit);
 	}
 
 	async delete(path: string): Promise<{ success: true }> {
-		const hnsw = await this.ensureReady();
-		this.ctx.storage.sql.exec("DELETE FROM memories WHERE path = ?", path);
-		this.ctx.storage.sql.exec("DELETE FROM file_tags WHERE path = ?", path);
-		this.ctx.storage.sql.exec("DELETE FROM file_links WHERE source = ?", path);
-		hnsw.delete(path);
+		await this.ensureReady();
+		this.ctx.storage.transactionSync(() => {
+			this.dropVectors(path);
+			this.ctx.storage.sql.exec("DELETE FROM file_tags WHERE path = ?", path);
+			this.ctx.storage.sql.exec("DELETE FROM file_links WHERE source = ?", path);
+		});
 		return { success: true };
 	}
 
 	/**
-	 * Drop vectors for paths that the current denylist excludes.
+	 * Drop vectors for paths the denylist excludes or that storage no longer has.
 	 *
 	 * Rules in `./indexable` only govern writes, so any file indexed before
 	 * its rule existed keeps a stale vector indefinitely. This re-tests every
@@ -315,26 +490,26 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 	 * files stay readable via `read` and `list`, they just stop competing for
 	 * recall.
 	 *
-	 * The HNSW graph is rebuilt from the surviving rows rather than mutated
-	 * in place. `HNSWIndex.delete` unlinks a node from its neighbours without
-	 * re-linking them to each other, so removing a large fraction of nodes
-	 * one-by-one leaves a sparsely-connected graph and can strand whole
-	 * regions from the entry point — degrading recall for the files we kept.
-	 * A rebuild is O(n log n) on a few hundred vectors and reuses the
-	 * embeddings already in SQL, so it costs no Workers AI calls.
+	 * The DO cannot tell on its own whether a path still exists: the
+	 * conversations instance indexes virtual paths that were never R2 keys.
+	 * So the caller lists storage and passes the paths it found missing in
+	 * `missing`; they are removed under the reason `MISSING_FROM_STORAGE`.
+	 * Paths in `missing` that are not indexed are ignored.
 	 *
 	 * Call with `dryRun` first on a live index; the counts are the only
 	 * preview available.
 	 */
-	async prune(args: { dryRun?: boolean } = {}): Promise<PruneResult> {
+	async prune(args: { dryRun?: boolean; missing?: string[] } = {}): Promise<PruneResult> {
 		await this.ensureReady();
 		const { dryRun = false } = args;
+		const missing = new Set(args.missing ?? []);
 
-		const rows = [...this.ctx.storage.sql.exec<{ path: string }>("SELECT path FROM memories")];
+		const rows = [...this.ctx.storage.sql.exec<{ path: string }>("SELECT path FROM files")];
 
 		const matched: Array<{ path: string; reason: string }> = [];
 		for (const row of rows) {
-			const reason = indexSkipReason(row.path);
+			const reason =
+				indexSkipReason(row.path) ?? (missing.has(row.path) ? MISSING_FROM_STORAGE : null);
 			if (reason) matched.push({ path: row.path, reason });
 		}
 
@@ -354,35 +529,40 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 			};
 		}
 
-		for (const m of matched) {
-			this.ctx.storage.sql.exec("DELETE FROM memories WHERE path = ?", m.path);
-			this.ctx.storage.sql.exec("DELETE FROM file_tags WHERE path = ?", m.path);
-			this.ctx.storage.sql.exec("DELETE FROM file_links WHERE source = ?", m.path);
-		}
-
-		// Force a cold rebuild from the surviving SQL rows.
-		this.hnsw = null;
-		this.initialized = false;
-		const hnsw = await this.ensureReady();
+		this.ctx.storage.transactionSync(() => {
+			for (const m of matched) {
+				this.dropVectors(m.path);
+				this.ctx.storage.sql.exec("DELETE FROM file_tags WHERE path = ?", m.path);
+				this.ctx.storage.sql.exec("DELETE FROM file_links WHERE source = ?", m.path);
+			}
+		});
 
 		return {
 			scanned: rows.length,
 			pruned: matched.length,
 			matched: matched.length,
-			remaining: hnsw.size(),
+			remaining: rows.length - matched.length,
 			byReason,
 			dryRun: false,
 		};
 	}
 
-	async stats(): Promise<{ indexed_files: number; index_size: number }> {
-		const hnsw = await this.ensureReady();
-		const row = [
-			...this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) as count FROM memories"),
-		][0];
+	async indexedPaths(): Promise<{ paths: IndexedPath[] }> {
+		await this.ensureReady();
+		const rows = this.ctx.storage.sql.exec<{ path: string; legacy: number }>(
+			"SELECT path, legacy FROM files ORDER BY path",
+		);
+		return { paths: [...rows].map((r) => ({ path: r.path, legacy: r.legacy === 1 })) };
+	}
+
+	async stats(): Promise<IndexStats> {
+		const vectors = await this.ensureReady();
+		const one = (q: string) => [...this.ctx.storage.sql.exec<{ count: number }>(q)][0]?.count ?? 0;
 		return {
-			indexed_files: row?.count ?? 0,
-			index_size: hnsw.size(),
+			indexed_files: one("SELECT COUNT(*) AS count FROM files"),
+			index_size: vectors.size,
+			chunks: one("SELECT COUNT(*) AS count FROM chunks"),
+			legacy_files: one("SELECT COUNT(*) AS count FROM files WHERE legacy = 1"),
 		};
 	}
 
@@ -443,7 +623,10 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 				return jsonResponse(await this.delete(path));
 			}
 			if (url.pathname === "/prune" && request.method === "POST") {
-				const body = (await request.json().catch(() => ({}))) as { dryRun?: boolean };
+				const body = (await request.json().catch(() => ({}))) as {
+					dryRun?: boolean;
+					missing?: string[];
+				};
 				return jsonResponse(await this.prune(body));
 			}
 			if (url.pathname === "/stats") {

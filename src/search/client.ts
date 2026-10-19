@@ -23,14 +23,14 @@ export function getMemoryIndex(env: Env): MemoryIndexRpc {
  * Resolve the `MemoryIndex` Durable Object holding conversation exchanges.
  *
  * Same class as the memory index, different instance — so a separate SQLite
- * database and a separate HNSW graph.
+ * database and a separate search index.
  *
  * The split is deliberate. Exchanges outnumber memory files by an order of
  * magnitude (hundreds of sessions, each with several exchanges, against ~200
- * curated files). Sharing one graph meant `search` had to pull `limit`
+ * curated files). Sharing one index meant `search` had to pull `limit`
  * candidates and then discard whichever ones came from the wrong namespace,
  * so a query against memory could come back nearly empty purely because
- * conversation vectors won the top slots. Two graphs make that starvation
+ * conversation vectors won the top slots. Two indexes make that starvation
  * impossible: each scope searches only its own, and neither can crowd out the
  * other however lopsided the volumes get.
  */

@@ -229,9 +229,9 @@ MCP server for AI agent memory with semantic search.
 - Codemode for complex queries
 
 **Key Decisions**:
-- Using Durable Objects for vector index (HNSW)
+- Using Durable Objects for the search index (chunk vectors + FTS5)
 - SQLite for persistence within DO
-- Workers AI for embeddings (@cf/baai/bge-base-en-v1.5)
+- Workers AI for embeddings (@cf/baai/bge-m3)
 
 ## other-project (Backlog)
 
