@@ -15,9 +15,11 @@ const DATA = process.env.SPIKE_DATA ?? "/tmp/agent-memory-spike";
 // Real queries and gold sets name people and tickets, so they stay out of
 // this public repo. queries.example.json shows the shape.
 const queries = JSON.parse(readFileSync(`${DATA}/queries.json`, "utf8"));
-const MODES = (process.env.MODES ?? "vector,hybrid,hybrid_or,hybrid_rerank,hybrid_or_rerank").split(
-	",",
-);
+// MODES="" runs only the live index (no spike Worker needed), which is how
+// the post-spike index was checked.
+const MODES = (process.env.MODES ?? "vector,hybrid,hybrid_or,hybrid_rerank,hybrid_or_rerank")
+	.split(",")
+	.filter(Boolean);
 
 async function spike(path, body) {
 	const r = await fetch(`${SPIKE_URL}${path}`, {
