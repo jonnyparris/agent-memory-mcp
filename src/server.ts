@@ -712,10 +712,12 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					.number()
 					.int()
 					.min(1)
-					.max(100)
+					.max(50)
 					.optional()
 					.default(25)
-					.describe("Max files to re-embed in this call."),
+					.describe(
+						"Max files to re-embed in this call. Each takes about a second; much over 50 and the HTTP response times out (the work still finishes).",
+					),
 				dry_run: z.boolean().default(false).describe("Only count legacy files."),
 			},
 		},
