@@ -218,14 +218,20 @@ export async function indexWrite(
 			// Vector mode, so the score is a similarity and not a
 			// rank-fusion score.
 			//
-			// 0.72 was tuned on whole-file vectors. Chunk scores for the same
-			// pair come out a little lower (median best-neighbour 0.764 ->
-			// 0.751 on the 113 memory files under 8,000 characters in the
-			// spike corpus). 0.715 keeps the flag rate where it was: 83 of
-			// those 113 files get a flag, the same as 0.72 on the old index.
-			// That rate is high (73%); the Jev classification below is what
-			// separates real duplicates from related files.
-			const OVERLAP_THRESHOLD = 0.715;
+			// 0.77 comes from 62 hand-labelled pairs (duplicate / related /
+			// unrelated) taken from the 113 memory files under 8,000
+			// characters in the spike corpus:
+			// - No threshold separates duplicates from related files. Files
+			//   built from one template (batch reports) score 0.84-0.92, which
+			//   is above most real duplicates (0.80-0.91). Jev does that split,
+			//   and it marked all 4 labelled duplicates as duplicate/supersedes.
+			// - So the threshold only has to drop unrelated pairs. All 15
+			//   unrelated pairs scored 0.76 or lower.
+			// Moving from 0.715 to 0.77 cuts flagged files from 83 to 41 of
+			// 113 (73% -> 36%) and Jev calls on that corpus from 271 to 101,
+			// and still flags every labelled duplicate (lowest scored 0.796).
+			// With only 4 duplicates that recall figure is a weak bound.
+			const OVERLAP_THRESHOLD = 0.77;
 			const candidates = await index.search({
 				query: content.slice(0, 8000),
 				limit: 5,
