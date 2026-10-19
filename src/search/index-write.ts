@@ -213,11 +213,24 @@ export async function indexWrite(
 		await index.update({ path, content, tags, links });
 
 		if (wantOverlaps) {
-			const OVERLAP_THRESHOLD = 0.72;
+			// Cosine similarity between the new file's opening 8,000
+			// characters and the best-matching chunk of each other file.
+			// Vector mode, so the score is a similarity and not a
+			// rank-fusion score.
+			//
+			// 0.72 was tuned on whole-file vectors. Chunk scores for the same
+			// pair come out a little lower (median best-neighbour 0.764 ->
+			// 0.751 on the 113 memory files under 8,000 characters in the
+			// spike corpus). 0.715 keeps the flag rate where it was: 83 of
+			// those 113 files get a flag, the same as 0.72 on the old index.
+			// That rate is high (73%); the Jev classification below is what
+			// separates real duplicates from related files.
+			const OVERLAP_THRESHOLD = 0.715;
 			const candidates = await index.search({
 				query: content.slice(0, 8000),
 				limit: 5,
 				timeWeight: false,
+				mode: "vector",
 			});
 			const overlaps = await Promise.all(
 				candidates

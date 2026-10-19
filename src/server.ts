@@ -19,6 +19,7 @@ import type { ProposedEdit } from "./reflection/tool-executor";
 import { checkReminders, listReminders, removeReminder, scheduleReminder } from "./reminders";
 import { getConversationIndex, getMemoryIndex } from "./search/client";
 import { EmptyContentError, indexWrite } from "./search/index-write";
+import { type IndexScope, pruneIndex, reindexLegacy } from "./search/maintenance";
 import { HISTORY_RETENTION, createR2Storage } from "./storage/r2";
 import { MAX_READ_LENGTH, extractSnippet, readWindow } from "./truncate";
 import type { Env } from "./types";
@@ -453,7 +454,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"search",
 		{
 			description:
-				"Search memory by meaning. Returns relevant file snippets. Pass `tags` to restrict to files matching every tag. Pass `scope: 'conversations'` to search indexed chat exchanges instead of memory files, or `scope: 'all'` for both.",
+				"Search memory by meaning and keywords (chunk embeddings plus full-text, fused by rank). Returns relevant file snippets. `score` is a rank-fusion score (1.0 = top in both); `similarity` is the best chunk's cosine similarity. Pass `tags` to restrict to files matching every tag. Pass `scope: 'conversations'` to search indexed chat exchanges instead of memory files, or `scope: 'all'` for both.",
 			inputSchema: {
 				query: z.string().describe("Natural language query"),
 				limit: z.number().optional().default(5).describe("Max results to return"),
@@ -525,6 +526,9 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 						path: r.id,
 						snippet: file ? extractSnippet(file.content) : "",
 						score: r.score,
+						...(r.similarity !== undefined
+							? { similarity: Math.round(r.similarity * 1000) / 1000 }
+							: {}),
 					};
 				}),
 			);
@@ -666,22 +670,70 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		{
 			description:
 				"Remove vectors for files the index denylist excludes (superseded archives, " +
-				"machine-generated reports, benchmark fixtures, non-prose file types). Files stay in R2 " +
-				"and stay readable via read/list — they just stop competing for search recall. " +
-				"Denylist rules only apply at write time, so this is how files indexed before a rule " +
-				"existed get cleaned up. Runs automatically on the daily cron. Pass dry_run to preview counts.",
+				"machine-generated reports, benchmark fixtures, non-prose file types), and for files " +
+				"that no longer exist in storage. Files stay in R2 and stay readable via read/list — " +
+				"they just stop competing for search recall. Runs automatically on the daily cron. " +
+				"Pass dry_run to preview counts.",
 			inputSchema: {
 				dry_run: z
 					.boolean()
 					.default(false)
 					.describe("Report what would be pruned without changing the index."),
+				scope: z
+					.enum(["memory", "conversations"])
+					.optional()
+					.default("memory")
+					.describe("Which index to prune."),
 			},
 		},
-		async ({ dry_run }: { dry_run?: boolean }) => {
-			return (await getMemoryIndex(env).prune({ dryRun: dry_run ?? false })) as unknown as Record<
-				string,
-				unknown
-			>;
+		async ({ dry_run, scope }: { dry_run?: boolean; scope?: IndexScope }) => {
+			return (await pruneIndex(env, storage, {
+				scope: scope ?? "memory",
+				dryRun: dry_run ?? false,
+			})) as unknown as Record<string, unknown>;
+		},
+	);
+
+	registerTool(
+		server,
+		"reindex",
+		{
+			description:
+				"Re-embed files still on a legacy whole-file vector as chunks, with full-text entries. " +
+				"Needed once after upgrading from the pre-chunking index. Works in batches: call again " +
+				"until `remaining` is 0. The daily cron also runs it.",
+			inputSchema: {
+				scope: z
+					.enum(["memory", "conversations"])
+					.optional()
+					.default("memory")
+					.describe("Which index to reindex."),
+				limit: z
+					.number()
+					.int()
+					.min(1)
+					.max(100)
+					.optional()
+					.default(25)
+					.describe("Max files to re-embed in this call."),
+				dry_run: z.boolean().default(false).describe("Only count legacy files."),
+			},
+		},
+		async ({
+			scope,
+			limit,
+			dry_run,
+		}: { scope?: IndexScope; limit?: number; dry_run?: boolean }) => {
+			const result = await reindexLegacy(env, storage, {
+				scope: scope ?? "memory",
+				limit: limit ?? 25,
+				dryRun: dry_run ?? false,
+			});
+			const stats = await (scope === "conversations"
+				? getConversationIndex(env)
+				: getMemoryIndex(env)
+			).stats();
+			return { ...result, stats } as unknown as Record<string, unknown>;
 		},
 	);
 

@@ -36,8 +36,8 @@ It runs entirely on Cloudflare's free tier. Your data never leaves your account.
 
 1. **Write** -- Your AI saves a note (a preference, a lesson, a decision).
 2. **Store** -- The file is saved to R2 with full version history. You can roll back any change.
-3. **Index** -- Workers AI turns the text into a vector embedding and adds it to a searchable index.
-4. **Search** -- Later, your AI (or you) can find that memory by asking a question in plain English. Semantic search matches by meaning, not exact words.
+3. **Index** -- The file is split into overlapping 1,500-character chunks. Workers AI turns each chunk into a vector, and the chunk text also goes into a full-text index.
+4. **Search** -- Later, your AI (or you) can find that memory by asking a question in plain English. Vector search matches by meaning, keyword search catches exact terms (ticket keys, names, error strings), and the two rankings are merged.
 
 Recent memories rank higher than old ones automatically.
 
@@ -55,7 +55,7 @@ Three Cloudflare services, one Worker:
 | Component | What it does |
 |-----------|-------------|
 | **R2** | Stores your memory files with version history |
-| **Durable Object** | Runs the HNSW vector index + SQLite for semantic search |
+| **Durable Object** | SQLite holding chunk vectors (exact cosine scan) and an FTS5 keyword index, fused with Reciprocal Rank Fusion |
 | **Workers AI** | Generates embeddings (bge-m3) and powers the daily reflection |
 
 ---
@@ -151,10 +151,12 @@ The server exposes 23 MCP tools. Your AI assistant discovers and uses them autom
 | `write_many` | Write up to 50 files in one call. R2 writes run in parallel and embedding updates are issued concurrently; defaults to `detect_overlaps: false` since bulk callers usually know what they're writing |
 | `list` | List files in a directory (optionally filter by tags). Each entry carries `size`, `updated_at`, and the R2 `etag` (md5 for simple puts) — a sync client can diff the etag against a local hash to skip re-downloading unchanged files |
 | `list_tags` | List all tags with the file count for each |
-| `search` | Find memories by meaning (semantic search; optionally filter by tags) |
+| `search` | Find memories by meaning and keywords (optionally filter by tags). `score` is a rank-fusion score (1.0 = ranked first by both vector and keyword search); `similarity` is the best chunk's cosine similarity |
 | `history` | See previous versions of a file |
 | `rollback` | Restore a file to an earlier version |
 | `get_backlinks` | List files that link to a target via `[[wikilinks]]` |
+| `prune_index` | Drop index entries for denylisted paths and for files no longer in R2 (runs daily) |
+| `reindex` | Re-embed files still on a pre-chunking vector. Batched; call until `remaining` is 0 (also runs daily) |
 | `execute` | Run JavaScript queries against your memory ([trust notes](#the-execute-tool)) |
 
 ### Conversations
@@ -332,6 +334,19 @@ If you have local memory files you want to upload:
 npm run migrate   # Upload local files to your deployed server
 npm run export    # Download all files from the server to local disk
 ```
+
+### Upgrading from the HNSW index (before 0.3)
+
+Older versions kept one vector per file in an HNSW graph. On first start the
+new code copies those vectors over, so search keeps working, but they have no
+keyword entries and still cover only the first 20,000 characters of each file.
+Run `reindex` (scope `memory`, then `conversations`) until `remaining` is 0, or
+let the daily cron do it 100 files at a time. The old `memories` table is left
+in place so a rollback still works.
+
+Why the change: on a 42-query test set from real use, the HNSW index found the
+right file in the top 5 for 55% of queries. Chunks plus keyword search found
+it for 95%. Details in [PR #18](https://github.com/jonnyparris/agent-memory-mcp/pull/18).
 
 ---
 

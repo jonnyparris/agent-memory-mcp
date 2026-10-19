@@ -58,7 +58,7 @@ describe("generateEmbedding", () => {
 		expect(result.vector.every((v) => typeof v === "number" && !Number.isNaN(v))).toBe(true);
 	});
 
-	it("should truncate very long text to the 20000-character embed budget", async () => {
+	it("should truncate very long text to the 8000-character query budget", async () => {
 		let capturedText = "";
 		const mockAI = {
 			run: async (_model: string, inputs: { text: string }) => {
@@ -70,7 +70,7 @@ describe("generateEmbedding", () => {
 		const longText = "a".repeat(50000);
 		await generateEmbedding(mockAI as unknown as Ai, longText);
 
-		expect(capturedText.length).toBe(20000);
+		expect(capturedText.length).toBe(8000);
 	});
 
 	it("should not truncate text under the embed budget", async () => {
@@ -106,7 +106,7 @@ describe("generateEmbedding", () => {
 
 		const result = await generateEmbedding(mockAI as unknown as Ai, "a".repeat(40000));
 
-		expect(attempts).toEqual([20000, 10000]);
+		expect(attempts).toEqual([8000, 4000]);
 		expect(result.vector.length).toBeGreaterThan(0);
 	});
 
@@ -149,10 +149,10 @@ describe("generateEmbedding", () => {
 			},
 		};
 
-		const exactText = "a".repeat(20000);
+		const exactText = "a".repeat(8000);
 		await generateEmbedding(mockAI as unknown as Ai, exactText);
 
-		expect(capturedText.length).toBe(20000);
+		expect(capturedText.length).toBe(8000);
 	});
 });
 
@@ -184,20 +184,46 @@ describe("generateEmbeddings", () => {
 		expect(results[0].vector).toHaveLength(EMBEDDING_DIMENSIONS);
 	});
 
-	it("should process batches of 10", async () => {
-		let callCount = 0;
+	it("should send texts to the model in batches of 20", async () => {
+		const batchSizes: number[] = [];
 		const mockAI = {
-			run: async (_model: string, inputs: { text: string }) => {
-				callCount++;
-				return { data: [{ embedding: mockEmbedding(inputs.text) }] };
+			run: async (_model: string, inputs: { text: string | string[] }) => {
+				const texts = Array.isArray(inputs.text) ? inputs.text : [inputs.text];
+				batchSizes.push(texts.length);
+				return { data: texts.map((t) => mockEmbedding(t)) };
 			},
 		};
 
-		// 25 texts should result in 25 individual calls (batched internally as Promise.all)
-		const texts = Array.from({ length: 25 }, (_, i) => `text ${i}`);
-		await generateEmbeddings(mockAI as unknown as Ai, texts);
+		const texts = Array.from({ length: 45 }, (_, i) => `text ${i}`);
+		const results = await generateEmbeddings(mockAI as unknown as Ai, texts);
 
-		expect(callCount).toBe(25);
+		expect(batchSizes).toEqual([20, 20, 5]);
+		expect(results).toHaveLength(45);
+	});
+
+	it("should fall back to one text at a time when a batch is too long", async () => {
+		const calls: Array<string | string[]> = [];
+		const mockAI = {
+			run: async (_model: string, inputs: { text: string | string[] }) => {
+				calls.push(inputs.text);
+				if (Array.isArray(inputs.text)) throw new Error("3030: Sequence too long");
+				return { data: [mockEmbedding(inputs.text)] };
+			},
+		};
+
+		const results = await generateEmbeddings(mockAI as unknown as Ai, ["a", "b"]);
+
+		expect(results).toHaveLength(2);
+		expect(calls).toEqual([["a", "b"], "a", "b"]);
+	});
+
+	it("should throw non-length errors instead of storing a partial set", async () => {
+		const mockAI = {
+			run: async () => {
+				throw new Error("5000: Internal error");
+			},
+		};
+		await expect(generateEmbeddings(mockAI as unknown as Ai, ["a"])).rejects.toThrow(/Internal/);
 	});
 
 	it("should maintain order of results", async () => {
@@ -225,23 +251,6 @@ describe("generateEmbeddings", () => {
 				expect(result.vector).not.toEqual(results[i - 1].vector);
 			}
 		});
-	});
-
-	it("should apply truncation to each text in batch", async () => {
-		const capturedTexts: string[] = [];
-		const mockAI = {
-			run: async (_model: string, inputs: { text: string }) => {
-				capturedTexts.push(inputs.text);
-				return { data: [{ embedding: mockEmbedding(inputs.text) }] };
-			},
-		};
-
-		const texts = ["a".repeat(50000), "b".repeat(50000), "short"];
-		await generateEmbeddings(mockAI as unknown as Ai, texts);
-
-		expect(capturedTexts[0].length).toBe(20000);
-		expect(capturedTexts[1].length).toBe(20000);
-		expect(capturedTexts[2].length).toBe(5);
 	});
 });
 
