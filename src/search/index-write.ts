@@ -13,7 +13,12 @@ export interface IndexWriteResult {
 	tags: string[];
 	links: string[];
 	embedding_error?: string;
-	overlaps?: Array<{ path: string; score: number; snippet: string }>;
+	/**
+	 * Neighbours that look like duplicates. `score` is the retrieval cosine
+	 * (opening of the new file vs the neighbour's best chunk); `coverage` is
+	 * the chunk-vs-chunk score the flag decision uses.
+	 */
+	overlaps?: Array<{ path: string; score: number; coverage: number; snippet: string }>;
 	/**
 	 * Jev-classified relationship for each flagged overlap (when the
 	 * classification succeeded). `verdict` + a concrete `action` suggestion.
@@ -213,41 +218,48 @@ export async function indexWrite(
 		await index.update({ path, content, tags, links });
 
 		if (wantOverlaps) {
-			// Cosine similarity between the new file's opening 8,000
-			// characters and the best-matching chunk of each other file.
-			// Vector mode, so the score is a similarity and not a
-			// rank-fusion score.
+			// Two steps. Retrieval: the top 5 files by cosine between the new
+			// file's opening 8,000 characters and each file's best chunk
+			// (vector mode, so `score` is a similarity, not a fusion score).
+			// Filter: flag a neighbour only when chunk-vs-chunk coverage
+			// (`coverage` in ./vectors — how much of either file the other
+			// already says) reaches OVERLAP_COVERAGE.
 			//
-			// 0.77 comes from 62 hand-labelled pairs (duplicate / related /
-			// unrelated) taken from the 113 memory files under 8,000
-			// characters in the spike corpus:
-			// - No threshold separates duplicates from related files. Files
-			//   built from one template (batch reports) score 0.84-0.92, which
-			//   is above most real duplicates (0.80-0.91). Jev does that split,
-			//   and it marked all 4 labelled duplicates as duplicate/supersedes.
-			// - So the threshold only has to drop unrelated pairs. All 15
-			//   unrelated pairs scored 0.76 or lower.
-			// Moving from 0.715 to 0.77 cuts flagged files from 83 to 41 of
-			// 113 (73% -> 36%) and Jev calls on that corpus from 271 to 101,
-			// and still flags every labelled duplicate (lowest scored 0.796).
-			// With only 4 duplicates that recall figure is a weak bound.
-			const OVERLAP_THRESHOLD = 0.77;
-			const candidates = await index.search({
-				query: content.slice(0, 8000),
-				limit: 5,
-				timeWeight: false,
-				mode: "vector",
-			});
+			// Tuned on 151 hand-labelled pairs (34 duplicates: 8 written
+			// independently, 17 old versions from `_history/`, 9 copies left by
+			// moves; 117 related/unrelated/tombstone) over the live memory
+			// corpus (237 indexed files, 1,185 top-5 neighbour pairs):
+			// - Old filter, retrieval cosine >= 0.77: caught 31/34 duplicates
+			//   and sent 18% of neighbour pairs to Jev.
+			// - Coverage >= 0.74: catches 33/34 (all 8 independent ones) and
+			//   sends 12% to Jev. AUC duplicate-vs-rest 0.97 vs 0.92 (95%
+			//   bootstrap CI on the gain +0.01..+0.10).
+			// - 0.74 sits between the highest unrelated pair (0.724) and the
+			//   lowest independent duplicate (0.754). One labeller, and the
+			//   threshold was picked on the same labels, so treat as indicative.
+			// Harness: agent-hq scratch/ai-search-spike-2026-10-15/overlap-tune/v2.
+			const OVERLAP_COVERAGE = 0.74;
+			const candidates = (
+				await index.search({
+					query: content.slice(0, 8000),
+					limit: 5,
+					timeWeight: false,
+					mode: "vector",
+				})
+			).filter((c) => c.id !== path && c.id.startsWith("memory/"));
+			const cover =
+				candidates.length > 0
+					? await index.coverage({ path, others: candidates.map((c) => c.id) })
+					: {};
 			const overlaps = await Promise.all(
 				candidates
-					.filter(
-						(c) => c.id !== path && c.id.startsWith("memory/") && c.score >= OVERLAP_THRESHOLD,
-					)
+					.filter((c) => (cover[c.id] ?? 0) >= OVERLAP_COVERAGE)
 					.map(async (c) => {
 						const file = await storage.read(c.id);
 						return {
 							path: c.id,
 							score: Math.round(c.score * 1000) / 1000,
+							coverage: Math.round((cover[c.id] ?? 0) * 1000) / 1000,
 							snippet: file ? extractSnippet(file.content, { maxLength: 300 }) : "",
 						};
 					}),

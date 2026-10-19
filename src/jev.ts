@@ -189,15 +189,19 @@ export async function classifyOverlap(
 			questions: {
 				relationship: {
 					type: "choice",
+					// The tombstone sentence: without it Jev called 5 of 8
+					// redirect/tombstone pairs duplicate or supersedes. With it,
+					// 0 of 8, and duplicates were still caught (31/34 both ways).
 					instructions:
-						"How does the new file relate to the existing file, judged by their content?",
+						"How does the new file relate to the existing file, judged by their content? A short file that only says it moved, was deleted or was superseded, and points to the other file, is a redirect (tombstone): it holds no information of its own, so it is not a duplicate of the file it points to.",
 					criteria: {
 						duplicate:
 							"Substantially the same information — keeping both creates a redundant memory",
 						supersedes:
 							"Both hold similar information but the existing file is stale or outdated relative to the new one",
 						related: "Similar topic but genuinely different information worth keeping in both",
-						distinct: "Only superficially similar — different topics in practice",
+						distinct:
+							"Only superficially similar — different topics in practice, or one file is just a redirect/tombstone pointing at the other",
 					},
 				},
 			},

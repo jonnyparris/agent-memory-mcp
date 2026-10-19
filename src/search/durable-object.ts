@@ -4,7 +4,14 @@ import { chunkText } from "./chunking";
 import { generateEmbedding, generateEmbeddings } from "./embeddings";
 import { FTS_TOKENIZE, buildFtsQuery, reciprocalRankFusion } from "./fts";
 import { indexSkipReason } from "./indexable";
-import { blobToVector, dot, legacyBlobToVector, normalise, vectorToBlob } from "./vectors";
+import {
+	blobToVector,
+	coverage as chunkCoverage,
+	dot,
+	legacyBlobToVector,
+	normalise,
+	vectorToBlob,
+} from "./vectors";
 
 interface DOEnv {
 	AI: Ai;
@@ -95,6 +102,11 @@ export interface MemoryIndexRpc {
 		tags?: string[];
 		mode?: SearchMode;
 	}): Promise<IndexHit[]>;
+	/**
+	 * Chunk-vs-chunk coverage between `path` and each of `others` (see
+	 * `coverage` in ./vectors). Paths with no vectors are left out.
+	 */
+	coverage(args: { path: string; others: string[] }): Promise<Record<string, number>>;
 	delete(path: string): Promise<{ success: true }>;
 	prune(args?: { dryRun?: boolean; missing?: string[] }): Promise<PruneResult>;
 	indexedPaths(): Promise<{ paths: IndexedPath[] }>;
@@ -417,6 +429,18 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 			chunk: keywordChunk.get(r.id) ?? vectorChunk.get(r.id),
 		}));
 		return this.rankResults(fused, limit, timeWeight);
+	}
+
+	async coverage(args: { path: string; others: string[] }): Promise<Record<string, number>> {
+		const vectors = await this.ensureReady();
+		const mine = vectors.get(args.path);
+		const out: Record<string, number> = {};
+		if (!mine) return out;
+		for (const other of args.others) {
+			const theirs = vectors.get(other);
+			if (theirs) out[other] = chunkCoverage(mine, theirs);
+		}
+		return out;
 	}
 
 	/**

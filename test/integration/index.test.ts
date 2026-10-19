@@ -135,6 +135,28 @@ describe("MemoryIndex", () => {
 		});
 	});
 
+	it("reports chunk-vs-chunk coverage against named files", async () => {
+		await withIndex(
+			async (instance) => {
+				await instance.update({ path: "memory/a.md", content: "alpha" });
+				await instance.update({ path: "memory/copy.md", content: "alpha" });
+				await instance.update({ path: "memory/other.md", content: "omega" });
+				const cover = await instance.coverage({
+					path: "memory/a.md",
+					others: ["memory/copy.md", "memory/other.md", "memory/missing.md"],
+				});
+				expect(cover["memory/copy.md"]).toBeCloseTo(1, 5);
+				expect(cover["memory/other.md"]).toBeCloseTo(0, 5);
+				// Files with no vectors are left out rather than scored 0.
+				expect(cover).not.toHaveProperty("memory/missing.md");
+				expect(
+					await instance.coverage({ path: "memory/nope.md", others: ["memory/a.md"] }),
+				).toEqual({});
+			},
+			scriptedAI({ alpha: axisVector(0), omega: axisVector(7) }),
+		);
+	});
+
 	it("returns cosine scores in vector mode", async () => {
 		await withIndex(
 			async (instance) => {
