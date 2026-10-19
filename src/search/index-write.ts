@@ -256,6 +256,12 @@ export async function indexWrite(
 					.filter((c) => (cover[c.id] ?? 0) >= OVERLAP_COVERAGE)
 					.map(async (c) => {
 						const file = await storage.read(c.id);
+						// The snippet is the file opening on purpose, not the matching
+						// chunk (c.chunk) that search results use. Jev classifies from
+						// it, and the opening holds the title and summary. On 75
+						// labelled pairs a matching-chunk snippet kept duplicate recall
+						// (30/31) but doubled false `supersedes` on related files (3 ->
+						// 6 of 33). Opening plus chunk was no better (4-5 of 33).
 						return {
 							path: c.id,
 							score: Math.round(c.score * 1000) / 1000,
