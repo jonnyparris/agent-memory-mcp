@@ -20,8 +20,9 @@ import { checkReminders, listReminders, removeReminder, scheduleReminder } from 
 import { getConversationIndex, getMemoryIndex } from "./search/client";
 import { EmptyContentError, indexWrite } from "./search/index-write";
 import { type IndexScope, pruneIndex, reindexLegacy } from "./search/maintenance";
+import { searchSnippet } from "./search/snippet";
 import { HISTORY_RETENTION, createR2Storage } from "./storage/r2";
-import { MAX_READ_LENGTH, extractSnippet, readWindow } from "./truncate";
+import { MAX_READ_LENGTH, readWindow } from "./truncate";
 import type { Env } from "./types";
 
 /**
@@ -524,7 +525,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					const file = await storage.read(r.id);
 					return {
 						path: r.id,
-						snippet: file ? extractSnippet(file.content) : "",
+						snippet: file ? searchSnippet(file.content, query, r.chunk) : "",
 						score: r.score,
 						...(r.similarity !== undefined
 							? { similarity: Math.round(r.similarity * 1000) / 1000 }

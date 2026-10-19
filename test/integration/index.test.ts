@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { CHUNK_CHARS } from "../../src/search/chunking";
+import { CHUNK_CHARS, chunkText } from "../../src/search/chunking";
 import { MISSING_FROM_STORAGE, type MemoryIndex } from "../../src/search/durable-object";
 import { EMBEDDING_DIMENSIONS } from "../../src/search/embeddings";
 import { createMockAI } from "../mocks/workers-ai";
@@ -115,6 +115,12 @@ describe("MemoryIndex", () => {
 			const hits = await instance.search({ query: "PAY-4821", limit: 3, timeWeight: false });
 			expect(hits[0].id).toBe("memory/hub.md");
 			expect(hits[0].similarity).toBeTypeOf("number");
+
+			// The hit reports the chunk holding the term, so the snippet can
+			// show it rather than the file opening.
+			const expected = chunkText(content).findIndex((c) => c.includes("PAY-4821"));
+			expect(expected).toBeGreaterThan(0);
+			expect(hits[0].chunk).toBe(expected);
 		});
 	});
 
@@ -145,6 +151,28 @@ describe("MemoryIndex", () => {
 				expect(hits[1].score).toBeCloseTo(0, 5);
 			},
 			scriptedAI({ A: axisVector(0), B: axisVector(9), q: axisVector(0, 0.8) }),
+		);
+	});
+
+	it("reports the best vector chunk when there is no keyword hit", async () => {
+		const content = `${"alpha ".repeat(300)}${"omega ".repeat(300)}`;
+		const pieces = chunkText(content);
+		expect(pieces).toHaveLength(3);
+		const [c0, c1, c2] = pieces;
+		await withIndex(
+			async (instance) => {
+				await instance.update({ path: "memory/long.md", content });
+				for (const mode of ["vector", "hybrid"] as const) {
+					const hits = await instance.search({ query: "q", timeWeight: false, mode });
+					expect(hits[0]).toMatchObject({ id: "memory/long.md", chunk: 1 });
+				}
+			},
+			scriptedAI({
+				[c0]: axisVector(5),
+				[c1]: axisVector(0),
+				[c2]: axisVector(9),
+				q: axisVector(0, 0.1),
+			}),
 		);
 	});
 

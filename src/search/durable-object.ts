@@ -42,6 +42,14 @@ export interface IndexHit {
 	id: string;
 	score: number;
 	similarity?: number;
+	/**
+	 * Index of the chunk that best matched, for building a snippet around the
+	 * hit instead of the file opening. In hybrid mode this is the best
+	 * keyword chunk when the file had a keyword hit (the literal terms are
+	 * there to see), otherwise the best vector chunk. Multiply by
+	 * `CHUNK_CHARS - CHUNK_OVERLAP` for its start offset in the file.
+	 */
+	chunk?: number;
 }
 
 /** One indexed file, as reported by `indexedPaths`. */
@@ -368,31 +376,45 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		// that would rank outside the global top-N is still found.
 		const allowed = tags && tags.length > 0 ? this.resolveTagIntersection(tags) : null;
 
+		// Array position equals the stored chunk `idx`: `ensureReady` loads
+		// rows ORDER BY idx and `update` writes idx 0..n-1 with no gaps.
 		const similarity = new Map<string, number>();
+		const vectorChunk = new Map<string, number>();
 		for (const [path, chunks] of vectors) {
 			if (allowed && !allowed.has(path)) continue;
 			let best = Number.NEGATIVE_INFINITY;
-			for (const c of chunks) {
+			let bestIdx = 0;
+			chunks.forEach((c, i) => {
 				const s = dot(q, c);
-				if (s > best) best = s;
-			}
+				if (s > best) {
+					best = s;
+					bestIdx = i;
+				}
+			});
 			similarity.set(path, best);
+			vectorChunk.set(path, bestIdx);
 		}
 		const byVector = [...similarity.entries()].sort((a, b) => b[1] - a[1]);
 
 		if (mode === "vector") {
 			return this.rankResults(
-				byVector.map(([id, score]) => ({ id, score, similarity: score })),
+				byVector.map(([id, score]) => ({
+					id,
+					score,
+					similarity: score,
+					chunk: vectorChunk.get(id),
+				})),
 				limit,
 				timeWeight,
 			);
 		}
 
 		const vectorList = byVector.slice(0, FUSION_CANDIDATES).map(([id]) => id);
-		const keywordList = this.keywordSearch(query, allowed);
-		const fused = reciprocalRankFusion([vectorList, keywordList]).map((r) => ({
+		const keywordChunk = this.keywordSearch(query, allowed);
+		const fused = reciprocalRankFusion([vectorList, [...keywordChunk.keys()]]).map((r) => ({
 			...r,
 			similarity: similarity.get(r.id),
+			chunk: keywordChunk.get(r.id) ?? vectorChunk.get(r.id),
 		}));
 		return this.rankResults(fused, limit, timeWeight);
 	}
@@ -400,26 +422,25 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 	/**
 	 * Rank files by BM25 over their chunks, best chunk per file.
 	 *
-	 * Returns at most `FUSION_CANDIDATES` paths. A malformed MATCH expression
+	 * Returns at most `FUSION_CANDIDATES` paths, in rank order (Map insertion
+	 * order), each mapped to the index of its best-ranked chunk. A malformed MATCH expression
 	 * is logged and treated as no keyword hits, so the vector half still
 	 * answers. `buildFtsQuery` quotes every term, so this should not happen.
 	 */
-	private keywordSearch(query: string, allowed: Set<string> | null): string[] {
+	private keywordSearch(query: string, allowed: Set<string> | null): Map<string, number> {
+		const out = new Map<string, number>();
 		const match = buildFtsQuery(query);
-		if (!match) return [];
-		const out: string[] = [];
-		const seen = new Set<string>();
+		if (!match) return out;
 		try {
-			const rows = this.ctx.storage.sql.exec<{ path: string }>(
-				"SELECT path FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?",
+			const rows = this.ctx.storage.sql.exec<{ path: string; idx: number }>(
+				"SELECT path, idx FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?",
 				match,
 				FTS_ROW_LIMIT,
 			);
 			for (const row of rows) {
-				if (seen.has(row.path) || (allowed && !allowed.has(row.path))) continue;
-				seen.add(row.path);
-				out.push(row.path);
-				if (out.length >= FUSION_CANDIDATES) break;
+				if (out.has(row.path) || (allowed && !allowed.has(row.path))) continue;
+				out.set(row.path, Number(row.idx));
+				if (out.size >= FUSION_CANDIDATES) break;
 			}
 		} catch (e) {
 			console.error(`Keyword search failed for ${JSON.stringify(match)}:`, e);
