@@ -103,10 +103,16 @@ export interface MemoryIndexRpc {
 		mode?: SearchMode;
 	}): Promise<IndexHit[]>;
 	/**
-	 * Chunk-vs-chunk coverage between `path` and each of `others` (see
-	 * `coverage` in ./vectors). Paths with no vectors are left out.
+	 * The `limit` files whose chunk-vs-chunk coverage with `path` (see
+	 * `coverage` in ./vectors) is highest, best first. Only paths starting
+	 * with `prefix` are scored; `path` itself is skipped. Empty when `path`
+	 * has no vectors. Uses stored vectors only, so no embedding call.
 	 */
-	coverage(args: { path: string; others: string[] }): Promise<Record<string, number>>;
+	coverageNeighbours(args: {
+		path: string;
+		prefix?: string;
+		limit?: number;
+	}): Promise<Array<{ path: string; coverage: number }>>;
 	delete(path: string): Promise<{ success: true }>;
 	prune(args?: { dryRun?: boolean; missing?: string[] }): Promise<PruneResult>;
 	indexedPaths(): Promise<{ paths: IndexedPath[] }>;
@@ -431,16 +437,24 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		return this.rankResults(fused, limit, timeWeight);
 	}
 
-	async coverage(args: { path: string; others: string[] }): Promise<Record<string, number>> {
+	async coverageNeighbours(args: {
+		path: string;
+		prefix?: string;
+		limit?: number;
+	}): Promise<Array<{ path: string; coverage: number }>> {
 		const vectors = await this.ensureReady();
-		const mine = vectors.get(args.path);
-		const out: Record<string, number> = {};
-		if (!mine) return out;
-		for (const other of args.others) {
-			const theirs = vectors.get(other);
-			if (theirs) out[other] = chunkCoverage(mine, theirs);
+		const { path, prefix = "", limit = 5 } = args;
+		const mine = vectors.get(path);
+		if (!mine) return [];
+		// Every chunk of `path` against every chunk in the index: on the live
+		// memory corpus (2,355 chunks) that is ~14k dot products for a typical
+		// 6-chunk file and ~113k for the largest (48 chunks).
+		const scored: Array<{ path: string; coverage: number }> = [];
+		for (const [other, theirs] of vectors) {
+			if (other === path || !other.startsWith(prefix)) continue;
+			scored.push({ path: other, coverage: chunkCoverage(mine, theirs) });
 		}
-		return out;
+		return scored.sort((a, b) => b.coverage - a.coverage).slice(0, limit);
 	}
 
 	/**

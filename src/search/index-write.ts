@@ -14,9 +14,9 @@ export interface IndexWriteResult {
 	links: string[];
 	embedding_error?: string;
 	/**
-	 * Neighbours that look like duplicates. `score` is the retrieval cosine
-	 * (opening of the new file vs the neighbour's best chunk); `coverage` is
-	 * the chunk-vs-chunk score the flag decision uses.
+	 * Neighbours that look like duplicates. `coverage` is the chunk-vs-chunk
+	 * score used to rank and flag them. `score` holds the same number; it is
+	 * kept so older callers that read it still work.
 	 */
 	overlaps?: Array<{ path: string; score: number; coverage: number; snippet: string }>;
 	/**
@@ -218,14 +218,25 @@ export async function indexWrite(
 		await index.update({ path, content, tags, links });
 
 		if (wantOverlaps) {
-			// Two steps. Retrieval: the top 5 files by cosine between the new
-			// file's opening 8,000 characters and each file's best chunk
-			// (vector mode, so `score` is a similarity, not a fusion score).
-			// Filter: flag a neighbour only when chunk-vs-chunk coverage
-			// (`coverage` in ./vectors — how much of either file the other
-			// already says) reaches OVERLAP_COVERAGE.
+			// Rank every memory file by chunk-vs-chunk coverage against the new
+			// file (`coverage` in ./vectors: how much of either file the other
+			// already says), keep the top 5, flag those at OVERLAP_COVERAGE or
+			// above. The chunk vectors were stored by `update` just above, so
+			// this needs no embedding call.
 			//
-			// Tuned on 151 hand-labelled pairs (34 duplicates: 8 written
+			// Retrieval used to be a search with the new file's opening 8,000
+			// characters, so a duplicate of a long file's later sections was
+			// never retrieved and the filter never saw it: learnings/2026-07.md
+			// vs its split-out 2026-07-part2.md ranked 64th (coverage 0.81).
+			// Ranked by coverage it is 2nd. Same labels, live corpus:
+			// duplicates flagged 66/68 pair-directions (was 65/68), Jev calls
+			// 158 over 237 writes (was 142), labelled non-duplicates flagged
+			// 20/117 (was 25/117). Jev now gets coverage as `similarity` instead
+			// of the old cosine: 75 labelled pairs x 2 reps, duplicates called
+			// duplicate/supersedes 32/34 (was 31/34), related files 3-4/33
+			// (was 3/33). Harness: overlap-tune/v4 (path below).
+			//
+			// The threshold was tuned on 151 hand-labelled pairs (34 duplicates: 8 written
 			// independently, 17 old versions from `_history/`, 9 copies left by
 			// moves; 117 related/unrelated/tombstone) over the live memory
 			// corpus (237 indexed files, 1,185 top-5 neighbour pairs):
@@ -239,33 +250,23 @@ export async function indexWrite(
 			//   threshold was picked on the same labels, so treat as indicative.
 			// Harness: agent-hq scratch/ai-search-spike-2026-10-15/overlap-tune/v2.
 			const OVERLAP_COVERAGE = 0.74;
-			const candidates = (
-				await index.search({
-					query: content.slice(0, 8000),
-					limit: 5,
-					timeWeight: false,
-					mode: "vector",
-				})
-			).filter((c) => c.id !== path && c.id.startsWith("memory/"));
-			const cover =
-				candidates.length > 0
-					? await index.coverage({ path, others: candidates.map((c) => c.id) })
-					: {};
+			const neighbours = await index.coverageNeighbours({ path, prefix: "memory/", limit: 5 });
 			const overlaps = await Promise.all(
-				candidates
-					.filter((c) => (cover[c.id] ?? 0) >= OVERLAP_COVERAGE)
+				neighbours
+					.filter((c) => c.coverage >= OVERLAP_COVERAGE)
 					.map(async (c) => {
-						const file = await storage.read(c.id);
+						const file = await storage.read(c.path);
+						const coverage = Math.round(c.coverage * 1000) / 1000;
 						// The snippet is the file opening on purpose, not the matching
-						// chunk (c.chunk) that search results use. Jev classifies from
-						// it, and the opening holds the title and summary. On 75
+						// chunk that search results use. Jev classifies from it, and
+						// the opening holds the title and summary. On 75
 						// labelled pairs a matching-chunk snippet kept duplicate recall
 						// (30/31) but doubled false `supersedes` on related files (3 ->
 						// 6 of 33). Opening plus chunk was no better (4-5 of 33).
 						return {
-							path: c.id,
-							score: Math.round(c.score * 1000) / 1000,
-							coverage: Math.round((cover[c.id] ?? 0) * 1000) / 1000,
+							path: c.path,
+							score: coverage,
+							coverage,
 							snippet: file ? extractSnippet(file.content, { maxLength: 300 }) : "",
 						};
 					}),

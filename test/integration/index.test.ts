@@ -135,26 +135,45 @@ describe("MemoryIndex", () => {
 		});
 	});
 
-	it("reports chunk-vs-chunk coverage against named files", async () => {
+	it("ranks files by chunk-vs-chunk coverage, best first", async () => {
 		await withIndex(
 			async (instance) => {
 				await instance.update({ path: "memory/a.md", content: "alpha" });
 				await instance.update({ path: "memory/copy.md", content: "alpha" });
 				await instance.update({ path: "memory/other.md", content: "omega" });
-				const cover = await instance.coverage({
-					path: "memory/a.md",
-					others: ["memory/copy.md", "memory/other.md", "memory/missing.md"],
-				});
-				expect(cover["memory/copy.md"]).toBeCloseTo(1, 5);
-				expect(cover["memory/other.md"]).toBeCloseTo(0, 5);
-				// Files with no vectors are left out rather than scored 0.
-				expect(cover).not.toHaveProperty("memory/missing.md");
+				await instance.update({ path: "notes/copy.md", content: "alpha" });
+				const near = await instance.coverageNeighbours({ path: "memory/a.md", prefix: "memory/" });
+				// Self and paths outside the prefix are skipped.
+				expect(near.map((n) => n.path)).toEqual(["memory/copy.md", "memory/other.md"]);
+				expect(near[0].coverage).toBeCloseTo(1, 5);
+				expect(near[1].coverage).toBeCloseTo(0, 5);
 				expect(
-					await instance.coverage({ path: "memory/nope.md", others: ["memory/a.md"] }),
-				).toEqual({});
+					await instance.coverageNeighbours({ path: "memory/a.md", prefix: "memory/", limit: 1 }),
+				).toHaveLength(1);
+				expect(await instance.coverageNeighbours({ path: "memory/nope.md" })).toEqual([]);
 			},
 			scriptedAI({ alpha: axisVector(0), omega: axisVector(7) }),
 		);
+	});
+
+	it("finds a file that duplicates only the end of a long file", async () => {
+		// The case the old opening-8,000-characters search missed: the new
+		// file's tail is the whole of an existing file.
+		const head = "h".repeat(9000);
+		const tail = "t".repeat(1500);
+		const vectors: Record<string, number[]> = { [tail]: axisVector(1) };
+		vectors["u".repeat(1500)] = axisVector(2);
+		for (const piece of chunkText(head + tail)) {
+			vectors[piece] = /^t+$/.test(piece) ? axisVector(1) : axisVector(3);
+		}
+		await withIndex(async (instance) => {
+			await instance.update({ path: "memory/part2.md", content: tail });
+			await instance.update({ path: "memory/unrelated.md", content: "u".repeat(1500) });
+			await instance.update({ path: "memory/long.md", content: head + tail });
+			const near = await instance.coverageNeighbours({ path: "memory/long.md", prefix: "memory/" });
+			expect(near[0].path).toBe("memory/part2.md");
+			expect(near[0].coverage).toBeCloseTo(1, 5);
+		}, scriptedAI(vectors));
 	});
 
 	it("returns cosine scores in vector mode", async () => {
