@@ -36,7 +36,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main'
+    # Secrets can't be read in `if:` directly; lift them to job env.
+    env:
+      MEMORY_MCP_URL: ${{ secrets.MEMORY_MCP_URL }}
+      MEMORY_AUTH_TOKEN: ${{ secrets.MEMORY_AUTH_TOKEN }}
     steps:
+      - name: Skip notice (no deployed-worker secrets)
+        if: env.MEMORY_MCP_URL == '' || env.MEMORY_AUTH_TOKEN == ''
+        run: echo "::notice title=E2E skipped::MEMORY_MCP_URL / MEMORY_AUTH_TOKEN repo secrets not set; skipping deployed-worker E2E."
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -48,7 +56,5 @@ jobs:
         run: npm ci
 
       - name: Run E2E tests
+        if: env.MEMORY_MCP_URL != '' && env.MEMORY_AUTH_TOKEN != ''
         run: npm run test:e2e
-        env:
-          MEMORY_MCP_URL: ${{ secrets.MEMORY_MCP_URL }}
-          MEMORY_AUTH_TOKEN: ${{ secrets.MEMORY_AUTH_TOKEN }}

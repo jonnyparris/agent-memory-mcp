@@ -10,7 +10,7 @@
 		"test:watch": "vitest",
 		"test:unit": "vitest run test/unit",
 		"test:integration": "vitest run test/integration",
-		"test:e2e": "vitest run test/e2e",
+		"test:e2e": "vitest run --config vitest.e2e.config.ts",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
