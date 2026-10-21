@@ -324,6 +324,8 @@ npm run test:unit # Unit tests only
 npm run deploy    # Typecheck, lint, test, then deploy
 ```
 
+`npm run test:e2e` runs `test/e2e/` against a deployed worker (`MEMORY_MCP_URL` + `MEMORY_AUTH_TOKEN`; skipped without them). Point it at a throwaway instance, not your real memory: `npm run deploy -- --config wrangler.e2e.jsonc` deploys `agent-memory-mcp-e2e` with its own bucket (`agent-memory-e2e`) and no cron, then `npx wrangler secret put MEMORY_AUTH_TOKEN --config wrangler.e2e.jsonc`. The suite purges its own test file on the way out. CI runs it on pushes to `main` when both repo secrets are set. CI does not redeploy the e2e worker, so redeploy it when you want e2e to cover new server code.
+
 `npm run deploy` runs the checks before deploying. Set `STRICT_DEPLOY=1` in `.env` to also refuse deploys from anything but a clean, up-to-date `main` (`ALLOW_BRANCH_DEPLOY=1` overrides for testing a branch). If your Cloudflare login can see several accounts, set `CLOUDFLARE_ACCOUNT_ID` in `.env` too.
 
 ### Migrating existing memory files

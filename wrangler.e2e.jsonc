@@ -1,0 +1,45 @@
+{
+	// Throwaway instance for the deployed-worker E2E suite (test/e2e/).
+	// Own worker, own bucket, own MEMORY_AUTH_TOKEN: a CI token can never
+	// touch the real memory store. No cron, no chat webhook — reflection
+	// against an empty test bucket is noise.
+	//   npm run deploy -- --config wrangler.e2e.jsonc
+	//   npx wrangler secret put MEMORY_AUTH_TOKEN --config wrangler.e2e.jsonc
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "agent-memory-mcp-e2e",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-16",
+	"compatibility_flags": ["nodejs_compat"],
+
+	"r2_buckets": [
+		{
+			"binding": "MEMORY_BUCKET",
+			"bucket_name": "agent-memory-e2e"
+		}
+	],
+
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MEMORY_INDEX",
+				"class_name": "MemoryIndex"
+			}
+		]
+	},
+
+	"ai": {
+		"binding": "AI"
+	},
+
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MemoryIndex"]
+		}
+	],
+
+	"vars": {
+		"REFLECTION_MODEL": "@cf/deepseek-ai/deepseek-v4-flash-0731",
+		"USE_AGENTIC_REFLECTION": "false"
+	}
+}
