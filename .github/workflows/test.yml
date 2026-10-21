@@ -40,6 +40,12 @@ jobs:
     env:
       MEMORY_MCP_URL: ${{ secrets.MEMORY_MCP_URL }}
       MEMORY_AUTH_TOKEN: ${{ secrets.MEMORY_AUTH_TOKEN }}
+      # Optional: lets CI redeploy the throwaway e2e worker from this commit
+      # before testing it. Token needs Workers Scripts Write (+ Account
+      # Settings Read) on the account that owns agent-memory-mcp-e2e. Without
+      # it, e2e runs against whatever was last deployed by hand.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Skip notice (no deployed-worker secrets)
         if: env.MEMORY_MCP_URL == '' || env.MEMORY_AUTH_TOKEN == ''
@@ -54,6 +60,14 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Deploy e2e worker from this commit
+        if: env.MEMORY_MCP_URL != '' && env.MEMORY_AUTH_TOKEN != '' && env.CLOUDFLARE_API_TOKEN != ''
+        run: npx wrangler deploy --config wrangler.e2e.jsonc --message "ci ${GITHUB_SHA::7}"
+
+      - name: Stale-worker notice (no deploy token)
+        if: env.MEMORY_MCP_URL != '' && env.MEMORY_AUTH_TOKEN != '' && env.CLOUDFLARE_API_TOKEN == ''
+        run: echo "::warning title=E2E against last manual deploy::CLOUDFLARE_API_TOKEN not set; e2e tests the worker as last deployed, not this commit."
 
       - name: Run E2E tests
         if: env.MEMORY_MCP_URL != '' && env.MEMORY_AUTH_TOKEN != ''
