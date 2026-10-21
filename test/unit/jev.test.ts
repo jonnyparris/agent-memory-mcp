@@ -5,6 +5,7 @@ import {
 	checkForSecrets,
 	classifyOverlap,
 	jevAnswers,
+	overlapNewContent,
 	rerankSearchResults,
 } from "../../src/jev";
 
@@ -93,6 +94,30 @@ describe("classifyOverlap", () => {
 		expect(analysis?.action).toContain("archive");
 	});
 
+	it("sends Jev the whole new file, not the first 3,000 characters", async () => {
+		let sent = "";
+		const ai = {
+			run: async (_m: string, inputs: { state: { new_file: { content: string } } }) => {
+				sent = inputs.state.new_file.content;
+				return {
+					result: {
+						answers: {
+							relationship: {
+								type: "choice",
+								choice: "duplicate",
+								confidence: 1,
+								probabilities: { duplicate: 1 },
+							},
+						},
+					},
+				};
+			},
+		} as unknown as JevAi;
+		const content = `${"u".repeat(6000)}${"dup".repeat(1000)}`;
+		await classifyOverlap(ai, "memory/new.md", content, existing);
+		expect(sent).toBe(content);
+	});
+
 	it("returns null when Jev fails", async () => {
 		expect(await classifyOverlap(aiThatThrows(), "memory/new.md", "new", existing)).toBeNull();
 	});
@@ -107,6 +132,34 @@ describe("classifyOverlap", () => {
 			},
 		});
 		expect(await classifyOverlap(ai, "memory/new.md", "new", existing)).toBeNull();
+	});
+});
+
+describe("overlapNewContent", () => {
+	it("returns content at or under the cap unchanged", () => {
+		expect(overlapNewContent("abc", 5000, 10)).toBe("abc");
+		expect(overlapNewContent("x".repeat(10), undefined, 10)).toBe("x".repeat(10));
+	});
+
+	it("keeps the opening and the matching part above the cap", () => {
+		const content = `${"o".repeat(1500)}${"u".repeat(60_000)}${"M".repeat(5000)}${"z".repeat(10_000)}`;
+		const out = overlapNewContent(content, 61_500, 40_000);
+		expect(out.length).toBe(40_000);
+		expect(out.startsWith("o".repeat(1500))).toBe(true);
+		expect(out).toContain("M".repeat(5000));
+	});
+
+	it("shifts the window back when the match is near the end", () => {
+		const content = `${"o".repeat(1500)}${"u".repeat(60_000)}TAIL`;
+		const out = overlapNewContent(content, content.length - 4, 40_000);
+		expect(out.length).toBe(40_000);
+		expect(out.endsWith("TAIL")).toBe(true);
+	});
+
+	it("falls back to the first cap characters with no match offset, or one inside the opening", () => {
+		const content = "x".repeat(50_000);
+		expect(overlapNewContent(content, undefined, 40_000)).toBe("x".repeat(40_000));
+		expect(overlapNewContent(content, 0, 40_000)).toBe("x".repeat(40_000));
 	});
 });
 

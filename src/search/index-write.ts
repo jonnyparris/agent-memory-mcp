@@ -6,6 +6,7 @@ import type { Env } from "../types";
 import { parseWikilinks } from "../wikilinks";
 import { getMemoryIndex } from "./client";
 import { indexSkipReason } from "./indexable";
+import { chunkStart } from "./snippet";
 
 export interface IndexWriteResult {
 	success: boolean;
@@ -267,22 +268,25 @@ export async function indexWrite(
 							path: c.path,
 							score: coverage,
 							coverage,
+							matchStart: c.chunk >= 0 ? chunkStart(c.chunk) : undefined,
 							snippet: file ? extractSnippet(file.content, { maxLength: 300 }) : "",
 						};
 					}),
 			);
 			if (overlaps.length > 0) {
-				response.overlaps = overlaps;
+				response.overlaps = overlaps.map(({ matchStart: _, ...o }) => o);
 				// Calibrated relationship analysis per flagged overlap — turns
 				// "these look similar" into a concrete verdict + action.
 				const analyses = (
 					await Promise.all(
 						overlaps.map((o) =>
-							classifyOverlap(ai, path, content, {
-								path: o.path,
-								snippet: o.snippet,
-								score: o.score,
-							}),
+							classifyOverlap(
+								ai,
+								path,
+								content,
+								{ path: o.path, snippet: o.snippet, score: o.score },
+								o.matchStart,
+							),
 						),
 					)
 				).filter((a): a is OverlapAnalysis => a !== null);

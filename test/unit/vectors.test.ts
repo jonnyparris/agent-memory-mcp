@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coverage, normalise } from "../../src/search/vectors";
+import { coverage, coverageDetail, normalise } from "../../src/search/vectors";
 
 const v = (...xs: number[]) => normalise(xs);
 
@@ -28,5 +28,13 @@ describe("coverage", () => {
 	it("is 0 when either side has no vectors", () => {
 		expect(coverage([], [v(1, 0)])).toBe(0);
 		expect(coverage([v(1, 0)], [])).toBe(0);
+	});
+
+	it("coverageDetail reports which chunk of a best matches b", () => {
+		const a = [v(0, 0, 1, 0), v(0, 1, 0, 0), v(1, 0, 0, 0)];
+		const b = [v(1, 0, 0, 0)];
+		expect(coverageDetail(a, b).bestA).toBe(2);
+		expect(coverageDetail(a, b).coverage).toBeCloseTo(coverage(a, b), 6);
+		expect(coverageDetail([], b).bestA).toBe(-1);
 	});
 });

@@ -173,6 +173,8 @@ describe("MemoryIndex", () => {
 			const near = await instance.coverageNeighbours({ path: "memory/long.md", prefix: "memory/" });
 			expect(near[0].path).toBe("memory/part2.md");
 			expect(near[0].coverage).toBeCloseTo(1, 5);
+			// The matching chunk is the tail one, so Jev can be shown it.
+			expect(near[0].chunk).toBe(chunkText(head + tail).length - 1);
 		}, scriptedAI(vectors));
 	});
 

@@ -6,7 +6,7 @@ import { FTS_TOKENIZE, buildFtsQuery, reciprocalRankFusion } from "./fts";
 import { indexSkipReason } from "./indexable";
 import {
 	blobToVector,
-	coverage as chunkCoverage,
+	coverageDetail,
 	dot,
 	legacyBlobToVector,
 	normalise,
@@ -107,12 +107,14 @@ export interface MemoryIndexRpc {
 	 * `coverage` in ./vectors) is highest, best first. Only paths starting
 	 * with `prefix` are scored; `path` itself is skipped. Empty when `path`
 	 * has no vectors. Uses stored vectors only, so no embedding call.
+	 * `chunk` is the index of `path`'s chunk that best matches the neighbour
+	 * (offset via `chunkStart`).
 	 */
 	coverageNeighbours(args: {
 		path: string;
 		prefix?: string;
 		limit?: number;
-	}): Promise<Array<{ path: string; coverage: number }>>;
+	}): Promise<Array<{ path: string; coverage: number; chunk: number }>>;
 	delete(path: string): Promise<{ success: true }>;
 	prune(args?: { dryRun?: boolean; missing?: string[] }): Promise<PruneResult>;
 	indexedPaths(): Promise<{ paths: IndexedPath[] }>;
@@ -441,7 +443,7 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		path: string;
 		prefix?: string;
 		limit?: number;
-	}): Promise<Array<{ path: string; coverage: number }>> {
+	}): Promise<Array<{ path: string; coverage: number; chunk: number }>> {
 		const vectors = await this.ensureReady();
 		const { path, prefix = "", limit = 5 } = args;
 		const mine = vectors.get(path);
@@ -449,10 +451,11 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		// Every chunk of `path` against every chunk in the index: on the live
 		// memory corpus (2,355 chunks) that is ~14k dot products for a typical
 		// 6-chunk file and ~113k for the largest (48 chunks).
-		const scored: Array<{ path: string; coverage: number }> = [];
+		const scored: Array<{ path: string; coverage: number; chunk: number }> = [];
 		for (const [other, theirs] of vectors) {
 			if (other === path || !other.startsWith(prefix)) continue;
-			scored.push({ path: other, coverage: chunkCoverage(mine, theirs) });
+			const { coverage, bestA } = coverageDetail(mine, theirs);
+			scored.push({ path: other, coverage, chunk: bestA });
 		}
 		return scored.sort((a, b) => b.coverage - a.coverage).slice(0, limit);
 	}

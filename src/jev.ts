@@ -169,20 +169,64 @@ const OVERLAP_ACTIONS: Record<OverlapVerdict, string> = {
 };
 
 /**
+ * Most of the new file Jev is shown. It used to get the first 3,000
+ * characters, so a new file whose duplicated part sat further down was
+ * judged on unrelated text: on 10 synthetic "6k unrelated + verbatim copy of
+ * an existing file" cases, the opening 3,000 got 0/10 called duplicate, the
+ * whole file 9/10. On the 75 labelled pairs the whole file kept duplicate
+ * recall (31/34 vs 32/34, noise) without more false merges on related files
+ * (2/33 vs 4/33) or tombstones (0/8). 62 of those 75 new files were over
+ * 3,000 characters. Jev took a 43,200-character file (15,941 tokens) without
+ * error; its real limit is unknown, hence the cap. Cost per call goes from
+ * ~1.7k to at most ~16k input tokens; median latency +~70 ms.
+ * Harness: agent-hq scratch/ai-search-spike-2026-10-15/overlap-tune/v5.
+ * Clef (@cf/cloudflare/clef*) was tried too and called every tail duplicate
+ * related/distinct whatever window it saw, so this stays on Jev.
+ */
+export const OVERLAP_NEW_FILE_CHARS = 40_000;
+
+/** Characters of the file opening kept when the new file is over the cap. */
+const OVERLAP_OPENING_CHARS = 1500;
+
+/**
+ * The part of the new file Jev sees: all of it up to
+ * `OVERLAP_NEW_FILE_CHARS`. Above that, the opening (title, summary) plus a
+ * window starting at `matchStart`, the offset of the new-file chunk that best
+ * matches the neighbour, filled to the cap. Without `matchStart`, the first
+ * `OVERLAP_NEW_FILE_CHARS` characters.
+ */
+export function overlapNewContent(
+	content: string,
+	matchStart?: number,
+	cap = OVERLAP_NEW_FILE_CHARS,
+): string {
+	if (content.length <= cap) return content;
+	if (matchStart === undefined || matchStart < OVERLAP_OPENING_CHARS) return content.slice(0, cap);
+	const sep = "\n…\n";
+	const windowChars = cap - OVERLAP_OPENING_CHARS - sep.length;
+	// Shift the window back if it would run off the end, but never into the
+	// opening (which is already shown).
+	const start = Math.max(OVERLAP_OPENING_CHARS, Math.min(matchStart, content.length - windowChars));
+	return content.slice(0, OVERLAP_OPENING_CHARS) + sep + content.slice(start, start + windowChars);
+}
+
+/**
  * Classify the relationship between a new write and one existing similar
- * file. Returns null on failure (caller falls back to the plain overlap
- * warning).
+ * file. `newContent` is the whole new file; `newMatchStart` is the offset of
+ * its chunk that best matches `existing` (used only above the cap). Returns
+ * null on failure (caller falls back to the plain overlap warning).
  */
 export async function classifyOverlap(
 	ai: JevAi,
 	newPath: string,
-	newSnippet: string,
+	newContent: string,
 	existing: { path: string; snippet: string; score: number },
+	newMatchStart?: number,
 ): Promise<OverlapAnalysis | null> {
 	try {
 		const response = await ai.run("typesafe/jev", {
 			state: {
-				new_file: { path: newPath, content: newSnippet.slice(0, 3000) },
+				new_file: { path: newPath, content: overlapNewContent(newContent, newMatchStart) },
 				existing_file: { path: existing.path, content: existing.snippet.slice(0, 3000) },
 				similarity: existing.score,
 			},

@@ -59,7 +59,19 @@ export function dot(a: Float32Array, b: Float32Array): number {
  * Inputs must be unit length (as stored). Returns 0 when either side is empty.
  */
 export function coverage(a: readonly Float32Array[], b: readonly Float32Array[]): number {
-	if (a.length === 0 || b.length === 0) return 0;
+	return coverageDetail(a, b).coverage;
+}
+
+/**
+ * `coverage`, plus `bestA`: the index of the chunk of `a` that best matches
+ * any chunk of `b` (-1 when either side is empty). Overlap detection uses it
+ * to pick which part of a long new file to show Jev.
+ */
+export function coverageDetail(
+	a: readonly Float32Array[],
+	b: readonly Float32Array[],
+): { coverage: number; bestA: number } {
+	if (a.length === 0 || b.length === 0) return { coverage: 0, bestA: -1 };
 	const bestForA = new Array<number>(a.length).fill(Number.NEGATIVE_INFINITY);
 	const bestForB = new Array<number>(b.length).fill(Number.NEGATIVE_INFINITY);
 	for (let i = 0; i < a.length; i++) {
@@ -70,7 +82,9 @@ export function coverage(a: readonly Float32Array[], b: readonly Float32Array[])
 		}
 	}
 	const mean = (xs: number[]) => xs.reduce((t, x) => t + x, 0) / xs.length;
-	return Math.max(mean(bestForA), mean(bestForB));
+	let bestA = 0;
+	for (let i = 1; i < a.length; i++) if (bestForA[i] > bestForA[bestA]) bestA = i;
+	return { coverage: Math.max(mean(bestForA), mean(bestForB)), bestA };
 }
 
 /** Serialise a vector to the bytes stored in SQLite. */
