@@ -29,7 +29,7 @@ const FUSION_CANDIDATES = 50;
 const FTS_ROW_LIMIT = 500;
 
 /** Bumped when the table layout changes. Stored in the `meta` table. */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /** Reason recorded by `prune` for paths the caller reports as gone from storage. */
 export const MISSING_FROM_STORAGE = "missing from storage";
@@ -231,7 +231,10 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 		);
 		if (version < SCHEMA_VERSION) {
 			this.ctx.storage.transactionSync(() => {
-				this.migrateFromV1();
+				if (version < 2) this.migrateFromV1();
+				// v3: the pre-chunking `memories` table was kept after v2 only so a
+				// rollback would find it. It has been copied into `chunks`; drop it.
+				sql.exec("DROP TABLE IF EXISTS memories");
 				sql.exec(
 					"INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
 					String(SCHEMA_VERSION),
@@ -262,8 +265,8 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 	 * Legacy files have no keyword entry (the old table never stored text);
 	 * `reindex` re-embeds them from storage.
 	 *
-	 * The `memories` table is left in place, not dropped, so rolling the
-	 * deploy back finds the old index intact. It is no longer read or written.
+	 * The `memories` table is dropped straight after (schema v3), in the same
+	 * transaction. Rolling back past v2 would need a reindex.
 	 */
 	private migrateFromV1(): void {
 		const sql = this.ctx.storage.sql;
