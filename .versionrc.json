@@ -50,5 +50,8 @@
 	"tagPrefix": "v",
 	"skip": {
 		"changelog": true
+	},
+	"scripts": {
+		"postbump": "npx --no-install biome format --write package.json"
 	}
 }

@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import pkg from "../package.json";
 import {
 	exchangeEmbeddingText,
 	exchangeIndexPath,
@@ -38,7 +39,7 @@ import type { Env } from "./types";
 export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 	const server = new McpServer({
 		name: "agent-memory",
-		version: "0.1.0",
+		version: pkg.version,
 	});
 
 	const storage = createR2Storage(env.MEMORY_BUCKET);

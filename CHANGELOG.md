@@ -8,7 +8,7 @@ version tells you what to do after you update. Most updates need nothing.
 Version numbers follow [Semantic Versioning](https://semver.org/): the middle
 number goes up for new features, the last number for fixes.
 
-## Unreleased (will be 0.3.0)
+## [0.3.0] - 2026-10-23
 
 ### In short
 
@@ -40,9 +40,10 @@ month.
 
 ### Your notes are safer
 
-- **Undo works.** Every time a file changes, the old version is kept (the
-  last 20 versions of each file). `history` shows them and `rollback` brings
-  one back. Before, these tools looked like they worked but did nothing.
+- **Undo works.** Every time a file is changed, moved or deleted, the old
+  version is kept (the last 20 versions of each file). `history` shows them
+  and `rollback` brings one back. Before, these tools looked like they worked
+  but did nothing. History starts from your first change after updating.
 - **New: delete and move files.** Both keep a copy first, so you can undo
   them. Moving a file also tells you which other notes link to the old name.
 - **Long files can be read in full.** Before, anything past 50,000
@@ -95,6 +96,8 @@ Every night the server reviews your notes and tidies them up.
   does it slowly for you (100 files a night). Search still works in the
   meantime, just not as well.
 - **If you used `execute`,** switch to `search`, `read` and `list`.
+- **If you set `REFLECTION_MODEL_FAST`,** you can remove it. It is no
+  longer used.
 - **Optional:** to keep costs as low as possible, set `REFLECTION_MODEL` to
   `@cf/google/gemma-4-26b-a4b-it` in `wrangler.jsonc`.
 
@@ -142,5 +145,6 @@ First release.
 - Reminders, one-off or repeating.
 - A nightly job that suggests improvements to your notes.
 
+[0.3.0]: https://github.com/jonnyparris/agent-memory-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jonnyparris/agent-memory-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jonnyparris/agent-memory-mcp/releases/tag/v0.1.0

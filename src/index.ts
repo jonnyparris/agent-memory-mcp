@@ -21,6 +21,7 @@
  */
 
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import pkg from "../package.json";
 import { unauthorizedResponse, validateAuth } from "./auth";
 import { runReflection } from "./reflection";
 import { pruneIndex, reindexLegacy } from "./search/maintenance";
@@ -48,7 +49,7 @@ export default {
 
 		// Health check endpoint (no auth required)
 		if (url.pathname === "/health") {
-			return new Response(JSON.stringify({ status: "ok", version: "0.1.0" }), {
+			return new Response(JSON.stringify({ status: "ok", version: pkg.version }), {
 				headers: { "Content-Type": "application/json" },
 			});
 		}

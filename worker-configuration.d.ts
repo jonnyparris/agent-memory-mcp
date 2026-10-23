@@ -10,7 +10,6 @@ declare namespace Cloudflare {
 		MEMORY_BUCKET: R2Bucket;
 		AI: Ai;
 		REFLECTION_MODEL: "@cf/moonshotai/kimi-k2.6";
-		REFLECTION_MODEL_FAST: "@cf/zai-org/glm-4.7-flash";
 		USE_AGENTIC_REFLECTION: "true";
 		MEMORY_AUTH_TOKEN: string;
 		ARIA_CHAT_AUTH_KEY: string;

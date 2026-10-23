@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import pkg from "../../package.json";
 
 // The server is stateless. A GET that returns an event stream which closes
 // at once makes the MCP TS client reconnect every second for as long as it
@@ -33,5 +34,33 @@ describe("MCP transport", () => {
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as { result: { tools: unknown[] } };
 		expect(body.result.tools.length).toBeGreaterThan(0);
+	});
+
+	it("reports the package.json version on /health and in MCP initialize", async () => {
+		const health = (await (await SELF.fetch("http://localhost/health")).json()) as {
+			version: string;
+		};
+		expect(health.version).toBe(pkg.version);
+
+		const res = await SELF.fetch("http://localhost/mcp", {
+			method: "POST",
+			headers: {
+				Authorization: auth,
+				"Content-Type": "application/json",
+				Accept: "application/json, text/event-stream",
+			},
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
+				params: {
+					protocolVersion: "2025-03-26",
+					capabilities: {},
+					clientInfo: { name: "test", version: "0" },
+				},
+			}),
+		});
+		const body = (await res.json()) as { result: { serverInfo: { version: string } } };
+		expect(body.result.serverInfo.version).toBe(pkg.version);
 	});
 });
