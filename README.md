@@ -8,6 +8,8 @@ It runs entirely on Cloudflare's free tier. Your data never leaves your account.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jonnyparris/agent-memory-mcp)
 
+**What's new:** search finds the right note far more often, undo actually works, and you can delete and move files. Already running it? Run `reindex` after updating. Full list in plain English: [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## What can you do with it?
@@ -35,7 +37,7 @@ It runs entirely on Cloudflare's free tier. Your data never leaves your account.
 </picture>
 
 1. **Write** -- Your AI saves a note (a preference, a lesson, a decision).
-2. **Store** -- The file is saved to R2 with full version history. You can roll back any change.
+2. **Store** -- The file is saved to R2. The last 20 versions of each file are kept, so you can roll back any change.
 3. **Index** -- The file is split into overlapping 1,500-character chunks. Workers AI turns each chunk into a vector, and the chunk text also goes into a full-text index.
 4. **Search** -- Later, your AI (or you) can find that memory by asking a question in plain English. Vector search matches by meaning, keyword search catches exact terms (ticket keys, names, error strings), and the two rankings are merged.
 
@@ -140,24 +142,27 @@ The server speaks the standard [Model Context Protocol](https://modelcontextprot
 
 ## Available tools
 
-The server exposes 23 MCP tools. Your AI assistant discovers and uses them automatically -- you don't need to call them yourself.
+The server exposes 24 MCP tools. Your AI assistant discovers and uses them automatically -- you don't need to call them yourself.
 
 ### Core memory
 
 | Tool | What it does |
 |------|-------------|
-| `read` | Read one file or up to 50 files from memory (pass a string or array of paths) |
+| `read` | Read one file or up to 50 files from memory (pass a string or array of paths). Long files come back in pages: pass `offset`/`limit` and keep going until `next_offset` is gone |
 | `write` | Save a file (auto-indexes for search; extracts `tags:` frontmatter for filtering). Pass `wait_for_index: false` to defer the embedding update for sub-second response, or `detect_overlaps: false` to skip the post-write similarity search |
 | `write_many` | Write up to 50 files in one call. R2 writes run in parallel and embedding updates are issued concurrently; defaults to `detect_overlaps: false` since bulk callers usually know what they're writing |
 | `list` | List files in a directory (optionally filter by tags). Each entry carries `size`, `updated_at`, and the R2 `etag` (md5 for simple puts) — a sync client can diff the etag against a local hash to skip re-downloading unchanged files |
 | `list_tags` | List all tags with the file count for each |
 | `search` | Find memories by meaning and keywords (optionally filter by tags). `score` is a rank-fusion score (1.0 = ranked first by both vector and keyword search); `similarity` is the best chunk's cosine similarity |
-| `history` | See previous versions of a file |
+| `delete` | Delete a file. A copy is kept so `rollback` can undo it; `purge: true` removes the copies too (for leaked secrets) |
+| `move` | Move or rename a file. Returns the files that link to the old path |
+| `history` | See previous versions of a file (last 20) |
 | `rollback` | Restore a file to an earlier version |
 | `get_backlinks` | List files that link to a target via `[[wikilinks]]` |
 | `prune_index` | Drop index entries for denylisted paths and for files no longer in R2 (runs daily) |
 | `reindex` | Re-embed files still on a pre-chunking vector. Batched; call until `remaining` is 0 (also runs daily) |
-| `execute` | Run JavaScript queries against your memory ([trust notes](#the-execute-tool)) |
+
+The `execute` tool was removed in 0.3.0. It never worked on deployed Workers and was a security risk.
 
 ### Conversations
 
@@ -278,23 +283,6 @@ Concretely:
 - **Agent-driven deep reflection output** should live somewhere else (e.g. `memory/workload/plans/{date}-improvement-proposals.md`). Don't conflate the two — a healthy `memory/reflections/archive/` does not mean your weekly reflection ran.
 
 If your agent has a separate deep-reflection workflow, watch its output directory directly. The cron is a janitor; the agent is the architect.
-
----
-
-## The `execute` tool
-
-The `execute` tool runs arbitrary JavaScript against your memory. It's fast and convenient for complex queries (group files by tag, aggregate word counts, etc.) but it's **not a sandbox**:
-
-- Code runs in the same V8 isolate as the Worker.
-- It has access to global `fetch`, `crypto`, and other Web APIs.
-- It runs with the Worker's CPU limit as the only time bound (plus a 10s wall-clock timeout from the tool).
-- It does NOT have access to `env` bindings, your auth token, or other secrets — those never touch the global scope.
-
-Guidance:
-
-1. Only use `execute` when you trust who's calling it. The auth token protects the MCP endpoint; anyone with the token can run code.
-2. Don't expose this MCP to untrusted users without stripping the `execute` tool first.
-3. Use `search` + `read` instead when you can — they're safer and usually faster.
 
 ---
 

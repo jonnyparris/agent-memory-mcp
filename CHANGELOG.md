@@ -1,52 +1,146 @@
 # Changelog
 
-All notable changes to this project are documented here.
+What changed in each version, in plain English. Newest first.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+If you run your own copy, the **"Do you need to do anything?"** part of each
+version tells you what to do after you update. Most updates need nothing.
 
-From v0.2.0 onward, entries are generated from [Conventional Commits](https://www.conventionalcommits.org/)
-via `npm run release` (commit-and-tag-version). The 0.1.0 entry was
-backfilled by hand from history.
+Version numbers follow [Semantic Versioning](https://semver.org/): the middle
+number goes up for new features, the last number for fixes.
+
+## Unreleased (will be 0.3.0)
+
+### In short
+
+Search finds the right note far more often. You can now undo changes, delete
+and move files, and read very long files in full. The nightly clean-up job
+actually does its work now, and tells you honestly when it doesn't finish.
+An idle connection no longer runs up hundreds of thousands of requests a
+month.
+
+### Search is much better
+
+- **It finds the right note about 9 times in 10.** Before, it was about half
+  the time. We measured this with 42 real questions.
+- **Long files are searched all the way through.** Before, only the start of
+  each file was searched. Now every file is split into small pieces, and each
+  piece is searched.
+- **Exact words count.** Search now also matches exact words, such as ticket
+  numbers, names and error messages. Before, it matched only by general
+  meaning, so these were often missed.
+- **Results show the part that matched.** The preview now shows the part of
+  the file that answers your question, not just the first lines.
+- **Less clutter in results.** Drafts, machine-written logs and old archives
+  are kept out of search. They are still saved, and you can still open them.
+- **Filtering by tag works properly.** Before, a tagged file could be missed
+  if many other files matched better. Listing files by tag also returned
+  nothing. Both are fixed.
+- **Optional smarter ranking.** Ask search to `rerank`, and an AI model
+  re-orders the top results by which one actually answers your question.
+
+### Your notes are safer
+
+- **Undo works.** Every time a file changes, the old version is kept (the
+  last 20 versions of each file). `history` shows them and `rollback` brings
+  one back. Before, these tools looked like they worked but did nothing.
+- **New: delete and move files.** Both keep a copy first, so you can undo
+  them. Moving a file also tells you which other notes link to the old name.
+- **Long files can be read in full.** Before, anything past 50,000
+  characters was cut off. An AI that read a long file and saved it again
+  could lose the end of it. Reads now come in pages, so nothing is lost.
+- **Duplicate warnings are more accurate.** When you save a note that repeats
+  one you already have, you get a warning. It now also catches repeats deep
+  inside long files, and it warns less often about notes that are only
+  related.
+- **Passwords and keys are not made searchable.** If a note looks like it
+  contains a password or secret key, it is saved but left out of search.
+
+### The nightly clean-up works now
+
+Every night the server reviews your notes and tidies them up.
+
+- **It used to do nothing.** For months it said "Memory looks good" every
+  night, because it ran out of time before it could record anything. That
+  is fixed.
+- **It tells the truth.** If a run doesn't finish, it says so. It never says
+  "looks good" unless it actually checked.
+- **One job per night.** Each weekday it checks one thing, such as old plans,
+  conflicting lessons, or notes that should link to each other. Small jobs
+  get finished; "check everything" never did.
+- **Simple fixes are done by plain code.** Extra spaces and blank lines are
+  cleaned up without using AI at all.
+- **Safety limits.** It never deletes a whole file, and it won't make an edit
+  that removes more than 30% of a file. It flags those for you instead. Every
+  change it makes can be undone.
+- **Fewer messages.** You hear from it only when there is something to look
+  at, plus a short weekly summary on Sundays.
+- **New default AI model:** DeepSeek V4 Flash. It found the most real issues
+  in testing. Gemma 4 is cheaper if you want to stay closer to free.
+
+### Lower cost
+
+- **An idle AI assistant no longer costs requests.** A bug made connected
+  assistants reconnect every second, even when doing nothing. One month
+  this came to 765,000 requests. That is fixed.
+
+### Removed
+
+- **The `execute` tool is gone.** It never worked on the live service, and it
+  was a security risk. Use `search`, `read` and `list` instead.
+
+### Do you need to do anything?
+
+- **Run `reindex`** after updating, until it reports `remaining: 0`. This
+  rebuilds search for your existing notes. If you skip it, the nightly job
+  does it slowly for you (100 files a night). Search still works in the
+  meantime, just not as well.
+- **If you used `execute`,** switch to `search`, `read` and `list`.
+- **Optional:** to keep costs as low as possible, set `REFLECTION_MODEL` to
+  `@cf/google/gemma-4-26b-a4b-it` in `wrangler.jsonc`.
 
 ## [0.2.0] - 2026-07-01
 
+### In short
+
+Saving many files at once, faster saves, and a sync helper.
+
 ### Added
-- `list` now returns each file's R2 `etag`, so a sync client can diff it
-  against a local content hash and skip re-downloading unchanged files.
-- `write_many` — write up to 50 files in a single MCP call, with parallel
-  R2 writes and concurrent search-index updates.
-- `write` gained `wait_for_index` and `detect_overlaps` flags for
-  sub-second writes when the caller doesn't need the search index to be
-  consistent the moment the call returns.
-- Scheduled reflection surfaces flagged issues in its Google Chat card.
+
+- **Save up to 50 files in one go** with `write_many`.
+- **Faster saves.** You can choose not to wait for search to catch up, or to
+  skip the duplicate check. Saves then take under a second.
+- **Sync helper.** `list` now gives a fingerprint for each file, so a sync
+  tool can skip files that haven't changed.
+- **Nightly clean-up messages list the issues it found.**
 
 ### Changed
-- Reflection primary model swapped to Gemma 4 26B.
+
+- The nightly clean-up uses the Gemma 4 AI model.
 
 ### Fixed
-- `write` refuses empty content by default to prevent silent overwrites
-  (pass `allow_empty: true` to truncate deliberately).
-- LLM provider falls back to `reasoning_content` when `content` is null,
-  so a reasoning model that exhausts its token budget mid-deliberation
-  still returns a usable answer.
+
+- **Saving an empty file is refused by default,** so a mistake can't wipe a
+  note. Pass `allow_empty: true` if you really mean it.
+- The nightly clean-up no longer fails when the AI model runs out of space
+  while thinking.
+
+### Do you need to do anything?
+
+No.
 
 ## [0.1.0] - 2026-02-04
 
-Initial release.
+First release.
 
-### Added
-- Self-hostable MCP server for AI agent memory on Cloudflare Workers,
-  backed by R2 storage and a Durable Object semantic index.
-- Core memory tools: `read` (single file or up to 50 in one call),
-  `write`, `list`, `search`, `history`, `rollback`, and `execute`.
-- Tag support: YAML frontmatter extraction, `list_tags`, and tag-filtered
-  `list`/`search`.
-- Obsidian-style `[[wikilink]]` indexing with `get_backlinks`.
-- Conversation indexing with time-weighted semantic search.
-- Reminders (recurring cron and one-shot).
-- Agentic reflection via Workers AI, with list/apply/archive tools and
-  archived reflection records.
+- A memory server for AI assistants that you run on your own Cloudflare
+  account.
+- Save, read, list and search notes. Search works by meaning, not just exact
+  words.
+- Tags (in the file header) to group and filter notes.
+- `[[wikilinks]]` between notes, and a way to see which notes link to which.
+- Search across your past AI conversations.
+- Reminders, one-off or repeating.
+- A nightly job that suggests improvements to your notes.
 
 [0.2.0]: https://github.com/jonnyparris/agent-memory-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jonnyparris/agent-memory-mcp/releases/tag/v0.1.0
