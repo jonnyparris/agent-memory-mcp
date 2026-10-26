@@ -3,6 +3,7 @@
 	"version": "0.3.0",
 	"description": "Self-hostable MCP server for AI agent memory with semantic search",
 	"type": "module",
+	"packageManager": "npm@11.12.1",
 	"scripts": {
 		"dev": "wrangler dev",
 		"deploy": "bash scripts/deploy.sh",
