@@ -21,6 +21,7 @@ import { checkReminders, listReminders, removeReminder, scheduleReminder } from 
 import { getConversationIndex, getMemoryIndex } from "./search/client";
 import { EmptyContentError, indexWrite } from "./search/index-write";
 import { type IndexScope, pruneIndex, reindexLegacy } from "./search/maintenance";
+import { WrappedContentError } from "./search/read-wrapper";
 import { searchSnippet } from "./search/snippet";
 import { HISTORY_RETENTION, createR2Storage } from "./storage/r2";
 import { MAX_READ_LENGTH, readWindow } from "./truncate";
@@ -161,7 +162,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"write",
 		{
 			description:
-				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths by default, each with a Jev-classified relationship (duplicate/supersedes/related/distinct) and a suggested action. Content that looks like it contains live credentials is stored but refused indexing.\n\nLatency tuning: pass `wait_for_index: false` to defer the embedding update via `waitUntil` — the R2 write still completes synchronously, but the search index becomes consistent ~1–3s later. Pass `detect_overlaps: false` to skip the post-write similarity search (saves another DO round-trip plus R2 reads). Both default to the safe/correct values; flip them when you already know what you're doing (overwriting a known file, bulk edits).\n\nEmpty content is refused by default — pass `allow_empty: true` to truncate a file deliberately.",
+				"Write content to a file. Automatically updates the search index, extracts tags from YAML frontmatter, and indexes Obsidian-style [[wikilinks]]. Returns semantic overlap warnings for memory/ paths by default, each with a Jev-classified relationship (duplicate/supersedes/related/distinct) and a suggested action. Content that looks like it contains live credentials is stored but refused indexing.\n\nLatency tuning: pass `wait_for_index: false` to defer the embedding update via `waitUntil` — the R2 write still completes synchronously, but the search index becomes consistent ~1–3s later. Pass `detect_overlaps: false` to skip the post-write similarity search (saves another DO round-trip plus R2 reads). Both default to the safe/correct values; flip them when you already know what you're doing (overwriting a known file, bulk edits).\n\nEmpty content is refused by default — pass `allow_empty: true` to truncate a file deliberately. So is the read tool's display text (`Read <path> (N bytes)` + JSON): write the file's content from that JSON (`.content`, or `.files[<path>].content` for a multi-file read; every page of it if `truncated`), not the whole response.",
 			inputSchema: {
 				path: z.string().describe("File path, e.g., 'memory/learnings.md'"),
 				content: z.string().describe("Content to write"),
@@ -186,6 +187,13 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					.describe(
 						"Permit writing zero-byte content. Default false — empty writes are almost always a caller bug and they destructively overwrite the existing file. Set true only when you genuinely want to truncate.",
 					),
+				allow_wrapped: z
+					.boolean()
+					.optional()
+					.default(false)
+					.describe(
+						"Permit content that starts like the read tool's display text ('Read <path> (N bytes)' + JSON). Default false — that is almost always a read response written back by mistake.",
+					),
 			},
 		},
 		async ({
@@ -194,12 +202,14 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			detect_overlaps,
 			wait_for_index,
 			allow_empty,
+			allow_wrapped,
 		}: {
 			path: string;
 			content: string;
 			detect_overlaps?: boolean;
 			wait_for_index?: boolean;
 			allow_empty?: boolean;
+			allow_wrapped?: boolean;
 		}) => {
 			// Zod defaults the bools at the schema layer, but the
 			// destructure may still produce undefined when the SDK strips
@@ -214,6 +224,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					detectOverlaps,
 					waitForIndex,
 					allowEmpty,
+					allowWrapped: allow_wrapped === true,
 					ctx,
 				});
 			} catch (e) {
@@ -221,6 +232,9 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 					// Surface as a structured tool error so callers see the
 					// remediation hint rather than a generic exception.
 					return errResult(e.message, { path, allow_empty: false });
+				}
+				if (e instanceof WrappedContentError) {
+					return errResult(e.message, { path, allow_wrapped: false });
 				}
 				throw e;
 			}
@@ -280,7 +294,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 		"write_many",
 		{
 			description:
-				"Write multiple files in a single MCP round-trip. Each entry is processed independently — R2 writes run in parallel, embedding updates are issued concurrently to the search index DO, and partial failures are reported per-file rather than failing the whole batch.\n\nDefaults are tuned for bulk edits: detect_overlaps is OFF by default (the caller usually already knows what they're writing), and wait_for_index is ON by default (so the next read/search sees the updated index). Override per-file in the request when you need the cheaper or slower behaviour.\n\nMax 50 files per call. Use this whenever you'd otherwise loop over write — saves N-1 MCP round-trips and lets the embedding model run all updates in parallel.\n\nEmpty content is refused per-file by default — set `allow_empty: true` on a specific file entry to truncate it deliberately.",
+				"Write multiple files in a single MCP round-trip. Each entry is processed independently — R2 writes run in parallel, embedding updates are issued concurrently to the search index DO, and partial failures are reported per-file rather than failing the whole batch.\n\nDefaults are tuned for bulk edits: detect_overlaps is OFF by default (the caller usually already knows what they're writing), and wait_for_index is ON by default (so the next read/search sees the updated index). Override per-file in the request when you need the cheaper or slower behaviour.\n\nMax 50 files per call. Use this whenever you'd otherwise loop over write — saves N-1 MCP round-trips and lets the embedding model run all updates in parallel.\n\nEmpty content is refused per-file by default — set `allow_empty: true` on a specific file entry to truncate it deliberately. Entries that are the read tool's display text (`Read <path> (N bytes)` + JSON) fail per-file too: write `.content` (or `.files[<path>].content`) from that JSON instead, or set `allow_wrapped: true` on the entry to override.",
 			inputSchema: {
 				files: z
 					.array(
@@ -303,6 +317,12 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 								.describe(
 									"Permit zero-byte content for this file. Default false — empty entries are reported as per-file failures rather than silently overwriting the existing file.",
 								),
+							allow_wrapped: z
+								.boolean()
+								.optional()
+								.describe(
+									"Permit content that looks like the read tool's display text for this file. Default false — such entries are reported as per-file failures.",
+								),
 						}),
 					)
 					.min(1)
@@ -319,6 +339,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				detect_overlaps?: boolean;
 				wait_for_index?: boolean;
 				allow_empty?: boolean;
+				allow_wrapped?: boolean;
 			}>;
 		}) => {
 			// Run every write in parallel. indexWrite() handles its own
@@ -343,6 +364,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 							// fast path opt in per-file.
 							waitForIndex: file.wait_for_index !== false,
 							allowEmpty: file.allow_empty === true,
+							allowWrapped: file.allow_wrapped === true,
 							ctx,
 						});
 						return {
@@ -637,8 +659,11 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			// embedding pointing at the content we just discarded, so `search`
 			// kept returning the rolled-back text — and took no snapshot, so
 			// the restore was itself irreversible.
+			// Restores stored bytes verbatim, so neither content guard applies:
+			// rolling back must work even to a version that was empty or wrapped.
 			const result = await indexWrite(env, storage, path, fileContent, {
 				allowEmpty: true,
+				allowWrapped: true,
 			});
 			return {
 				success: true,
@@ -796,6 +821,7 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			await indexWrite(env, storage, to, source.content, {
 				detectOverlaps: false,
 				allowEmpty: true,
+				allowWrapped: true,
 			});
 			const deleted = await storage.delete(from, { history: true });
 			const index = getMemoryIndex(env);

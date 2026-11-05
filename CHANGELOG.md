@@ -8,6 +8,22 @@ version tells you what to do after you update. Most updates need nothing.
 Version numbers follow [Semantic Versioning](https://semver.org/): the middle
 number goes up for new features, the last number for fixes.
 
+## [Unreleased]
+
+### Fixes
+
+- **`write` refuses a read response written back as a file.** Some clients
+  see `read`'s reply only as text: a `Read <path> (N bytes)` line, then
+  JSON. Agents have edited that text and written all of it back, which
+  breaks the file. `write` and `write_many` now refuse content that starts
+  this way, and the error tells the caller which JSON field holds the real
+  content. `rollback` and `move` still copy such files unchanged.
+
+### Do you need to do anything?
+
+No. If you really do want to store text that starts like a read reply, pass
+`allow_wrapped: true`.
+
 ## [0.3.0] - 2026-10-23
 
 ### In short

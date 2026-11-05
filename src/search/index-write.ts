@@ -6,6 +6,7 @@ import type { Env } from "../types";
 import { parseWikilinks } from "../wikilinks";
 import { getMemoryIndex } from "./client";
 import { indexSkipReason } from "./indexable";
+import { WrappedContentError, isReadWrapper } from "./read-wrapper";
 import { chunkStart } from "./snippet";
 
 export interface IndexWriteResult {
@@ -91,6 +92,13 @@ export interface IndexWriteOptions {
 	 * See https://github.com/jonnyparris/agent-memory-mcp/issues/8.
 	 */
 	allowEmpty?: boolean;
+	/**
+	 * Opt in to writing content that looks like the `read` tool's display
+	 * text (`Read <path> (N bytes)` + JSON). Refused by default: it is an
+	 * agent writing back the read envelope instead of the file. See
+	 * `./read-wrapper`.
+	 */
+	allowWrapped?: boolean;
 }
 
 /**
@@ -138,6 +146,9 @@ export async function indexWrite(
 	// who genuinely want to truncate a file opt in with `allowEmpty`.
 	if (content.length === 0 && !options.allowEmpty) {
 		throw new EmptyContentError(path);
+	}
+	if (!options.allowWrapped && isReadWrapper(content)) {
+		throw new WrappedContentError(path);
 	}
 
 	// Snapshot the superseded content. This is the one write path a human

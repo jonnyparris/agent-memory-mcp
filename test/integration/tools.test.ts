@@ -143,6 +143,106 @@ describe("MCP Tools", () => {
 			expect(content.success).toBe(true);
 		});
 
+		it("should refuse the read tool's display text by default", async () => {
+			// Agents that see only the text block of a read response have
+			// written it back whole (2026-11-03 learnings, 2026-11-04
+			// active-todos). The write must fail and say what to do instead.
+			const result = await callTool("write", {
+				path: "test-tools/wrapped.md",
+				content:
+					'Read memory/workload/active-todos.md (31560 bytes)\n\n{"content":"# Active Todos","size":31560}',
+			});
+
+			expect(result.result.isError).toBe(true);
+			const errorText = result.result.content[0].text as string;
+			expect(errorText).toMatch(/display text/);
+			expect(errorText).toMatch(/\.content/);
+			expect(errorText).toMatch(/allow_wrapped/);
+
+			const read = await callTool("read", { path: "test-tools/wrapped.md" });
+			expect(read.result.isError).toBe(true);
+		});
+
+		it("should refuse the text block a real read returns", async () => {
+			// Feed the live read output back in, so a change to the read
+			// summary format that slips past the detector fails here.
+			await callTool("write", {
+				path: "test-tools/roundtrip-a.md",
+				content: "# A",
+				detect_overlaps: false,
+			});
+			await callTool("write", {
+				path: "test-tools/roundtrip-b.md",
+				content: "# B",
+				detect_overlaps: false,
+			});
+			await callTool("write", {
+				path: "test-tools/roundtrip-big.md",
+				content: "x".repeat(60_000),
+				detect_overlaps: false,
+			});
+			const reads = [
+				await callTool("read", { path: "test-tools/roundtrip-a.md" }),
+				await callTool("read", { path: "test-tools/roundtrip-a.md", offset: 0, limit: 2 }),
+				await callTool("read", {
+					path: ["test-tools/roundtrip-a.md", "test-tools/roundtrip-b.md"],
+				}),
+				// Non-paged truncated reads: content ends with the in-band marker.
+				await callTool("read", { path: "test-tools/roundtrip-big.md" }),
+				await callTool("read", {
+					path: ["test-tools/roundtrip-big.md", "test-tools/roundtrip-b.md"],
+				}),
+			];
+			for (const read of reads) {
+				const result = await callTool("write", {
+					path: "test-tools/roundtrip-a.md",
+					content: read.result.content[0].text as string,
+				});
+				expect(result.result.isError).toBe(true);
+				const errorText = result.result.content[0].text as string;
+				expect(errorText).toMatch(/allow_wrapped/);
+				expect(errorText).toContain(".files[<path>].content");
+				expect(errorText).toContain("offset: next_offset");
+			}
+		});
+
+		it("should still roll back to and move a wrapped version", async () => {
+			// rollback and move copy stored bytes verbatim; the guard must
+			// not trap a file that already holds wrapped content.
+			const path = "memory/test-wrapped-restore.md";
+			const wrapped = 'Read a.md (1 bytes)\n\n{"content":"x"}';
+			await callTool("write", {
+				path,
+				content: wrapped,
+				allow_wrapped: true,
+				wait_for_index: false,
+			});
+			const fixed = await callTool("write", { path, content: "x", wait_for_index: false });
+			const fixedBody = parseToolJson(fixed.result.content[0].text);
+
+			const rollback = await callTool("rollback", {
+				path,
+				version_id: fixedBody.previous_version_id,
+			});
+			expect(parseToolJson(rollback.result.content[0].text).success).toBe(true);
+
+			const moved = await callTool("move", { from: path, to: "memory/test-wrapped-moved.md" });
+			expect(parseToolJson(moved.result.content[0].text).success).toBe(true);
+			const read = await callTool("read", { path: "memory/test-wrapped-moved.md" });
+			expect(parseToolJson(read.result.content[0].text).content).toBe(wrapped);
+		});
+
+		it("should write the display text when allow_wrapped is true", async () => {
+			const result = await callTool("write", {
+				path: "test-tools/wrapped-allowed.md",
+				content: 'Read a.md (1 bytes)\n\n{"content":"x"}',
+				allow_wrapped: true,
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.success).toBe(true);
+		});
+
 		it("should report index_deferred when wait_for_index is false", async () => {
 			// `wait_for_index: false` opts the caller into eventual
 			// consistency: the R2 write still lands synchronously, but the
@@ -305,6 +405,31 @@ describe("MCP Tools", () => {
 			expect(byPath["test-tools/many-empty/empty.md"].success).toBe(false);
 			expect(byPath["test-tools/many-empty/empty.md"].error).toMatch(/empty content/i);
 			expect(byPath["test-tools/many-empty/empty.md"].error).toMatch(/allow_empty/);
+		});
+
+		it("should report wrapped entries as per-file failures", async () => {
+			const result = await callTool("write_many", {
+				files: [
+					{ path: "test-tools/many-wrapped/ok.md", content: "# OK" },
+					{
+						path: "test-tools/many-wrapped/wrapped.md",
+						content: 'Read 1/1 files\n\n{"files":{"a.md":{"content":"x"}}}',
+					},
+					{
+						path: "test-tools/many-wrapped/allowed.md",
+						content: 'Read a.md (1 bytes)\n\n{"content":"x"}',
+						allow_wrapped: true,
+					},
+				],
+			});
+
+			const content = parseToolJson(result.result.content[0].text);
+			expect(content.written).toBe(2);
+			expect(content.failed).toBe(1);
+			const byPath = Object.fromEntries(content.results.map((r: any) => [r.path, r]));
+			expect(byPath["test-tools/many-wrapped/wrapped.md"].success).toBe(false);
+			expect(byPath["test-tools/many-wrapped/wrapped.md"].error).toMatch(/allow_wrapped/);
+			expect(byPath["test-tools/many-wrapped/allowed.md"].success).toBe(true);
 		});
 
 		it("should write empty entries when allow_empty is true on that entry", async () => {
