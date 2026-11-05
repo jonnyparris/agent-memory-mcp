@@ -17,12 +17,15 @@ number goes up for new features, the last number for fixes.
   JSON. Agents have edited that text and written all of it back, which
   breaks the file. `write` and `write_many` now refuse content that starts
   this way, and the error tells the caller which JSON field holds the real
-  content. `rollback` and `move` still copy such files unchanged.
+  content. Every other write path refuses it too (applying reflection
+  edits, the nightly tidy-up), and reports a failure when it tries to write
+  such a file. Only `rollback` and `move` still copy such files unchanged.
 
 ### Do you need to do anything?
 
 No. If you really do want to store text that starts like a read reply, pass
-`allow_wrapped: true`.
+`allow_wrapped: true`. The nightly jobs may report such a file as needing a
+fix when they try to change it.
 
 ## [0.3.0] - 2026-10-23
 

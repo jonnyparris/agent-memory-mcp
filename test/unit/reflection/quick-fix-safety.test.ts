@@ -186,4 +186,68 @@ describe("quick fix safety", () => {
 		expect(result.error).toContain("oldText not found");
 		expect(written).toHaveLength(0);
 	});
+
+	it("flags a file that holds a read envelope, once, even on a no-op fix", async () => {
+		fileContent = 'Read memory/learnings.md (40 bytes)\n\n{"content":"# Learnings"}\n';
+		const first = await applyFix({ fixType: "newline" });
+		const again = await applyFix({ fixType: "newline" });
+
+		for (const result of [first, again]) {
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/display text/);
+		}
+		expect(written).toHaveLength(0);
+		expect(context.autoAppliedFixes).toHaveLength(0);
+		expect(context.flaggedIssues).toHaveLength(1);
+	});
+
+	it("refuses replacement text that is a read envelope, flagging the attempt", async () => {
+		fileContent = "# Learnings\n";
+		const wrapped = await applyFix({
+			fixType: "formatting",
+			oldText: "# Learnings\n",
+			newText: 'Read memory/learnings.md (12 bytes)\n\n{"content":"# Learnings"}',
+		});
+		expect(wrapped.success).toBe(false);
+		expect(wrapped.error).toMatch(/Refused; the file is unchanged/);
+		expect(written).toHaveLength(0);
+		expect(context.autoAppliedFixes).toHaveLength(0);
+		expect(context.flaggedIssues).toHaveLength(1);
+		expect(context.flaggedIssues[0].issue).toMatch(/tried to auto-apply/);
+	});
+
+	it("reports a wrapped file in a dry run too", async () => {
+		fileContent = 'Read memory/learnings.md (40 bytes)\n\n{"content":"# Learnings"}\n\n';
+		context.dryRun = true;
+		const result = await applyFix({ fixType: "newline" });
+		expect(result.success).toBe(false);
+		expect(written).toHaveLength(0);
+		expect(context.flaggedIssues).toHaveLength(1);
+	});
+
+	it("refuses every fix on a wrapped file, including a partial unwrap", async () => {
+		// Removing only the JSON would leave the summary line: neither the
+		// envelope nor the file. A human restores these.
+		fileContent = 'Read memory/learnings.md (12 bytes)\n\n{"content":"# Learnings"}';
+		const result = await applyFix({
+			fixType: "formatting",
+			oldText: '\n\n{"content":"# Learnings"}',
+			newText: "",
+		});
+		expect(result.success).toBe(false);
+		expect(result.error).toMatch(/flagged for a human/);
+		expect(result.error).not.toMatch(/roll back|allow_wrapped/);
+		expect(written).toHaveLength(0);
+		expect(context.flaggedIssues).toHaveLength(1);
+		expect(context.flaggedIssues[0].issue).toMatch(/Restore it/);
+	});
+
+	it("turns a rejected tool call into a failed result instead of rejecting", async () => {
+		// The dispatcher must `return await`: a bare returned promise that
+		// rejects skips its catch and aborts the whole reflection run.
+		(context.storage.read as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("R2 down"));
+		const result = await applyFix({ fixType: "newline" });
+		expect(result.success).toBe(false);
+		expect(result.error).toMatch(/Tool execution failed: R2 down/);
+	});
 });

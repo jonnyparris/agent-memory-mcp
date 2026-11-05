@@ -8,6 +8,7 @@
 import type { LLMToolCall } from "../llm/types";
 import { getMemoryIndex } from "../search/client";
 import { indexWrite } from "../search/index-write";
+import { WrappedContentError, isReadWrapper } from "../search/read-wrapper";
 import type { R2Storage } from "../storage/r2";
 import type { Env } from "../types";
 
@@ -104,25 +105,27 @@ export async function executeReflectionTool(
 ): Promise<ToolResult> {
 	const { name, arguments: args } = toolCall;
 
+	// `return await`, not `return`: a bare returned promise that rejects
+	// skips this catch and aborts the whole reflection run.
 	try {
 		switch (name) {
 			case "searchMemory":
-				return executeSearch(args as { query: string; limit?: number }, context);
+				return await executeSearch(args as { query: string; limit?: number }, context);
 
 			case "readFile":
-				return executeRead(args as { path: string; offset?: number }, context);
+				return await executeRead(args as { path: string; offset?: number }, context);
 
 			case "listFiles":
-				return executeList(args as { path: string; recursive?: boolean }, context);
+				return await executeList(args as { path: string; recursive?: boolean }, context);
 
 			case "getBacklinks":
-				return executeGetBacklinks(args as { target: string }, context);
+				return await executeGetBacklinks(args as { target: string }, context);
 
 			case "proposeEdit":
-				return executePropose(args as unknown as ProposedEdit, context);
+				return await executePropose(args as unknown as ProposedEdit, context);
 
 			case "autoApply":
-				return executeAutoApply(
+				return await executeAutoApply(
 					args as {
 						path: string;
 						fixType: AutoAppliedFix["fixType"];
@@ -134,7 +137,7 @@ export async function executeReflectionTool(
 				);
 
 			case "flagIssue":
-				return executeFlagIssue(args as unknown as FlaggedIssue, context);
+				return await executeFlagIssue(args as unknown as FlaggedIssue, context);
 
 			case "finishReflection":
 				return {
@@ -376,6 +379,12 @@ export function replaceShrinkError(
 	return `it would cut the file from ${before} to ${after} characters (${dropped}% removed)`;
 }
 
+function flagOnce(context: ToolExecutionContext, path: string, issue: string): void {
+	if (!context.flaggedIssues.some((f) => f.path === path && f.issue === issue)) {
+		context.flaggedIssues.push({ path, issue });
+	}
+}
+
 /**
  * Auto-apply a low-risk fix immediately
  */
@@ -393,6 +402,21 @@ async function executeAutoApply(
 	const file = await context.storage.read(args.path);
 	if (!file) {
 		return { success: false, error: `File not found: ${args.path}` };
+	}
+	// A file that already holds a read response needs restoring, not a
+	// cosmetic fix: a partial "unwrap" would write something that is neither
+	// the envelope nor the file. Refuse every fix on it and flag it once; the
+	// restore advice is for the human reading the report, not this agent.
+	if (isReadWrapper(file.content)) {
+		flagOnce(
+			context,
+			args.path,
+			`${args.path} holds the read tool's display text, not file content. Restore it from the read JSON (its content field, or files[path].content for a multi-file read), or roll back to an earlier version.`,
+		);
+		return {
+			success: false,
+			error: `${args.path} already holds the read tool's display text, not file content. Auto-fix skipped; it has been flagged for a human.`,
+		};
 	}
 
 	let newContent = file.content;
@@ -437,6 +461,15 @@ async function executeAutoApply(
 			break;
 	}
 
+	// A result that is the read tool's display text is refused and flagged
+	// once for the reflection report. Checked before the change/dryRun gate
+	// so previews and no-op fixes report it too.
+	if (isReadWrapper(newContent)) {
+		const issue = `Reflection tried to auto-apply the read tool's display text to ${args.path}. Refused; the file is unchanged.`;
+		flagOnce(context, args.path, issue);
+		return { success: false, error: `${issue} Auto-fix skipped.` };
+	}
+
 	if (newContent.trim().length === 0) {
 		return {
 			success: false,
@@ -465,9 +498,22 @@ async function executeAutoApply(
 		// indexWrite also brings the empty-content guard, which a direct write
 		// bypasses entirely — a `duplicate` fix whose oldText happened to match
 		// the whole file would have truncated it to zero bytes, unrecoverably.
-		const result = await indexWrite(context.env, context.storage, args.path, newContent, {
-			detectOverlaps: false,
-		});
+		let result: Awaited<ReturnType<typeof indexWrite>>;
+		try {
+			result = await indexWrite(context.env, context.storage, args.path, newContent, {
+				detectOverlaps: false,
+			});
+		} catch (e) {
+			// Unreachable while the isReadWrapper check above holds; kept so a
+			// drift between the two can't abort the run.
+			if (e instanceof WrappedContentError) {
+				return {
+					success: false,
+					error: "Auto-fix refused: the result is the read tool's display text.",
+				};
+			}
+			throw e;
+		}
 		if (result.embedding_error) {
 			const error =
 				`Partial write failure for ${args.path}: content was saved, but the search index ` +

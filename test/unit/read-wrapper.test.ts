@@ -13,6 +13,26 @@ describe("isReadWrapper", () => {
 
 	it.each([
 		["single file", 'Read memory/learnings/2026-11.md (812 bytes)\n\n{"content":"x"}'],
+		["CRLF line endings", 'Read a.md (1 bytes)\r\n\r\n{"content":"x"}'],
+		["pretty-printed JSON", 'Read a.md (1 bytes)\n\n{\n  "content": "x"\n}'],
+		[
+			"whole MCP result serialised with an indent",
+			JSON.stringify(
+				{ content: [{ type: "text", text: 'Read a.md (1 bytes)\n\n{"content":"x"}' }] },
+				null,
+				2,
+			),
+		],
+		[
+			"whole MCP result with hand-written spacing",
+			'{ "content" : [ { "type" : "text" , "text" : "Read a.md (1 bytes)\\n\\n{\\"content\\":\\"x\\"}" } ] }',
+		],
+		[
+			"whole MCP result, quoted path and reformatted inner JSON",
+			JSON.stringify({
+				content: [{ type: "text", text: 'Read a"b.md (1 bytes)\n\n{\n  "content": "x"\n}' }],
+			}),
+		],
 		["path with spaces", 'Read memory/my notes.md (5 bytes)\n\n{"content":"x"}'],
 		[
 			"single file, truncated",
@@ -42,10 +62,30 @@ describe("isReadWrapper", () => {
 		["the envelope quoted mid-file", 'Notes\n\nRead a.md (1 bytes)\n\n{"content":"x"}'],
 		["plain JSON file", '{"content":"x","size":1}'],
 		["empty", ""],
+		[
+			"MCP-shaped JSON whose text merely starts with Read",
+			'{"content":[{"type":"text","text":"Read me first"}]}',
+		],
+		[
+			"MCP-shaped JSON whose Read line is not a read summary",
+			JSON.stringify({ content: [{ type: "text", text: 'Read this config\n\n{"content":1}' }] }),
+		],
+		[
+			"MCP-shaped JSON, non-text block",
+			'{"content":[{"type":"image","text":"Read a.md (1 bytes)\\n\\n{\\"content\\":1}"}]}',
+		],
 		["a Read line that is not a read summary", 'Read this config:\n\n{"content":"x"}'],
 		["a Read line whose parenthesised part is not a size", 'Read a.md (draft)\n\n{"content":"x"}'],
 	])("leaves %s alone", (_label, content) => {
 		expect(isReadWrapper(content)).toBe(false);
+	});
+
+	it("stays linear on a long summary line with no newline", () => {
+		// A quadratic draft of this regex took ~1.3s here; the linear one
+		// takes a few ms. 500ms leaves room for a slow CI runner.
+		const start = performance.now();
+		expect(isReadWrapper(`Read a.md (1 bytes) · ${" ".repeat(50_000)}`)).toBe(false);
+		expect(performance.now() - start).toBeLessThan(500);
 	});
 });
 
@@ -58,6 +98,7 @@ describe("WrappedContentError", () => {
 		expect(message).toContain(".files[<path>].content");
 		expect(message).toContain("offset: 0");
 		expect(message).toContain("offset: next_offset");
+		expect(message).toContain("offset other than 0");
 		expect(message).toContain("allow_wrapped: true");
 	});
 });
