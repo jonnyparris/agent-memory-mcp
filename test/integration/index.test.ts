@@ -78,9 +78,13 @@ describe("MemoryIndex", () => {
 				const hits = await instance.search({ query: "q", limit: 2, timeWeight: false });
 				expect(hits[0].id).toBe("memory/a.md");
 
-				// Old table is kept for rollback.
-				const old = [...state.storage.sql.exec("SELECT path FROM memories")];
-				expect(old).toHaveLength(2);
+				// Old table is dropped once its vectors are copied.
+				const old = [
+					...state.storage.sql.exec(
+						"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'",
+					),
+				];
+				expect(old).toHaveLength(0);
 
 				const { paths } = await instance.indexedPaths();
 				expect(paths).toEqual([
@@ -94,6 +98,34 @@ describe("MemoryIndex", () => {
 			},
 			scriptedAI({ q: axisVector(0, 0.1) }),
 		);
+	});
+
+	it("drops the old memories table on a v2 index without re-migrating", async () => {
+		await withIndex(async (instance, state) => {
+			// A DO already on v2: new tables populated, old table still present.
+			await instance.update({ path: "memory/kept.md", content: "current content" });
+			seedLegacy(state, "memory/stale.md", axisVector(3));
+			state.storage.sql.exec("UPDATE meta SET value = '2' WHERE key = 'schema_version'");
+
+			// Clear the in-memory cache so the next call re-runs init, as a
+			// freshly woken DO would.
+			(instance as unknown as { vectors: unknown }).vectors = null;
+			const stats = await instance.stats();
+			expect(stats).toMatchObject({ indexed_files: 1, legacy_files: 0 });
+
+			const old = [
+				...state.storage.sql.exec(
+					"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'",
+				),
+			];
+			expect(old).toHaveLength(0);
+			const version = [
+				...state.storage.sql.exec<{ value: string }>(
+					"SELECT value FROM meta WHERE key = 'schema_version'",
+				),
+			][0]?.value;
+			expect(version).toBe("3");
+		});
 	});
 
 	it("chunks long files and finds exact terms deep inside them", async () => {
