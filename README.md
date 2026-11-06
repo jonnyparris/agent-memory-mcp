@@ -257,11 +257,12 @@ curl -X POST "https://your-worker.workers.dev/reflect" \
 
 ### Choosing a reflection model
 
-Set `REFLECTION_MODEL` in `wrangler.jsonc`. The default was picked by dry runs against a real 1,300-file memory store (2026-09-25, `plans` focus):
+Set `REFLECTION_MODEL` in `wrangler.jsonc`. The default was picked by dry runs against a real 1,300-file memory store (`plans` focus). The 1017 row is from an A/B against 0731 on 2026-10-20; the rest are from 2026-09-25:
 
 | Model | Result | Time |
 |---|---|---|
-| `@cf/deepseek-ai/deepseek-v4-flash-0731` | Finished, 11 specific findings, all spot-checked correct | 13 min at 25 turns (now capped at ~11) |
+| `@cf/deepseek-ai/deepseek-v4.1-flash-1017` (default) | Finished, 17 flags (five spot-checked, all correct) | 5.3 min |
+| `@cf/deepseek-ai/deepseek-v4-flash-0731` | Finished, 9 flags on 2026-10-20 (11 findings on 2026-09-25). Workers AI removes it on 2026-11-20 | 12.2 min |
 | `@cf/openai/gpt-oss-120b` | Finished, 1 finding | 2 min |
 | `@cf/google/gemma-4-26b-a4b-it` | Ran out of turns, 2 findings (finishes on narrower focuses) | 3 min |
 | `@cf/nvidia/nemotron-3-120b-a12b` | Ran out of turns, 3 findings | 4 min |
@@ -269,7 +270,7 @@ Set `REFLECTION_MODEL` in `wrangler.jsonc`. The default was picked by dry runs a
 | `@cf/zai-org/glm-5.3`, `glm-5.3-flash` | Over 15 minutes | - |
 | `@cf/moonshotai/kimi-k2.6` | Unusable: emits tool calls as text inside `reasoning_content` | - |
 
-DeepSeek costs more per token than Gemma ($0.44 vs $0.10 per million input tokens), but most of a run's input is cached ($0.014/M). Expect cents per night. For the cheapest setup that still works, use Gemma 4.
+On the same date Workers AI also removes `kimi-k2.6`, `glm-5.3-flash` and `nemotron-3-120b-a12b` ([deprecation notice](https://developers.cloudflare.com/changelog/post/2026-11-05-planned-model-deprecations/)). The other rows (1017, gpt-oss-120b, Gemma 4, qwen3.8-27b, glm-5.3) stay available. DeepSeek costs more per token than Gemma ($0.30 vs $0.10 per million input tokens), but most of a run's input is cached ($0.006/M). Expect cents per night. For the cheapest setup that still works, use Gemma 4.
 
 ### What the scheduled reflection is *not*
 

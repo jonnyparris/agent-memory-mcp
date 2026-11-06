@@ -9,10 +9,9 @@ vi.mock("../../../src/llm/workers-ai", () => ({
 		complete: vi.fn(),
 	})),
 	REFLECTION_MODELS: {
-		primary: "@cf/moonshotai/kimi-k2.6",
+		primary: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 		fast: "@cf/zai-org/glm-4.7-flash",
 		fallback: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-		legacy: "@cf/qwen/qwq-32b",
 	},
 }));
 
@@ -91,6 +90,27 @@ describe("runAgenticReflection", () => {
 		expect(result.deepAnalysisIterations).toBe(1);
 		expect(result.deepAnalysisFinished).toBe(true);
 		expect(result.focus.id).toBeTruthy();
+	});
+
+	it("uses REFLECTION_MODELS.primary when REFLECTION_MODEL is unset", async () => {
+		mockEnv.REFLECTION_MODEL = undefined;
+		mockLLMComplete.mockResolvedValueOnce({
+			response: "",
+			toolCalls: [
+				{
+					id: "call_finish",
+					name: "finishReflection",
+					arguments: { summary: "ok", proposedChanges: 0, autoApplied: 0 },
+				},
+			],
+		});
+
+		await runAgenticReflection(mockEnv, mockStorage);
+
+		expect(vi.mocked(WorkersAIProvider)).toHaveBeenCalledWith(
+			mockEnv.AI,
+			"@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+		);
 	});
 
 	it("should preserve call metadata across turns", async () => {

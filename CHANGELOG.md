@@ -20,12 +20,24 @@ number goes up for new features, the last number for fixes.
   content. Every other write path refuses it too (applying reflection
   edits, the nightly tidy-up), and reports a failure when it tries to write
   such a file. Only `rollback` and `move` still copy such files unchanged.
+- **The nightly reflection now uses DeepSeek V4.1 Flash 1017.** Workers AI
+  removes the old default, `@cf/deepseek-ai/deepseek-v4-flash-0731`, on
+  2026-11-20. After that date the nightly run would fail every night. The new
+  default, `@cf/deepseek-ai/deepseek-v4.1-flash-1017`, finished the same dry
+  run in 5.3 minutes instead of 12.2 and costs less. The code default for
+  `WorkersAIProvider` moves off `@cf/qwen/qwq-32b`, which is also removed,
+  and legacy mode (`USE_AGENTIC_REFLECTION="false"`) now reads
+  `REFLECTION_MODEL` too.
 
 ### Do you need to do anything?
 
 No. If you really do want to store text that starts like a read reply, pass
 `allow_wrapped: true`. The nightly jobs may report such a file as needing a
 fix when they try to change it.
+
+If you set `REFLECTION_MODEL` yourself to a model that Workers AI removes on
+2026-11-20 (for example 0731, `qwq-32b`, `kimi-k2.6` or `glm-5.3-flash`),
+change it before that date.
 
 ## [0.3.0] - 2026-10-23
 

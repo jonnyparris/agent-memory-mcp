@@ -351,7 +351,7 @@ describe("LLM provider", () => {
 		const provider = new WorkersAIProvider(mockAI as any);
 
 		expect(provider.name).toBe("workers-ai");
-		expect(provider.model).toBe("@cf/qwen/qwq-32b");
+		expect(provider.model).toBe("@cf/deepseek-ai/deepseek-v4.1-flash-1017");
 		expect(typeof provider.complete).toBe("function");
 	});
 
@@ -366,7 +366,7 @@ describe("LLM provider", () => {
 		const result = await provider.complete("Test prompt");
 
 		expect(mockAI.run).toHaveBeenCalledWith(
-			"@cf/qwen/qwq-32b",
+			"@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 			expect.objectContaining({
 				messages: expect.arrayContaining([
 					expect.objectContaining({ role: "user", content: "Test prompt" }),
@@ -388,7 +388,7 @@ describe("LLM provider", () => {
 		await provider.complete("User prompt", { systemPrompt: "You are a helpful assistant" });
 
 		expect(mockAI.run).toHaveBeenCalledWith(
-			"@cf/qwen/qwq-32b",
+			"@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 			expect.objectContaining({
 				messages: expect.arrayContaining([
 					expect.objectContaining({ role: "system", content: "You are a helpful assistant" }),

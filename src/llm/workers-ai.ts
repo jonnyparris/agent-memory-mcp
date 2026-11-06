@@ -6,10 +6,8 @@
  * /v1/chat/completions endpoint.
  *
  * Models with tool calling support:
- * - @cf/moonshotai/kimi-k2.6 - avoid: emits tool calls inside reasoning_content
- * - @cf/deepseek-ai/deepseek-v4-flash-0731 - reflection default (see README)
+ * - @cf/deepseek-ai/deepseek-v4.1-flash-1017 - reflection default (see README)
  * - @cf/meta/llama-3.3-70b-instruct-fp8-fast (proven reliable) - FALLBACK
- * - @cf/qwen/qwq-32b (reasoning model, no tool calling) - LEGACY
  */
 
 import type {
@@ -86,7 +84,7 @@ export class WorkersAIProvider implements LLMProvider {
 
 	constructor(
 		private ai: Ai,
-		model = "@cf/qwen/qwq-32b",
+		model: string = REFLECTION_MODELS.primary,
 	) {
 		this.model = model;
 	}
@@ -319,12 +317,10 @@ export class WorkersAIProvider implements LLMProvider {
 
 /** Model presets for different use cases */
 export const REFLECTION_MODELS = {
-	/** Deep analysis. Picked by dry-run comparison 2026-09-25 (see README). */
-	primary: "@cf/deepseek-ai/deepseek-v4-flash-0731",
+	/** Deep analysis. Picked by dry-run comparison 2026-10-20 (see README). */
+	primary: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 	/** Small, cheap model (no longer used by reflection) */
 	fast: "@cf/zai-org/glm-4.7-flash",
 	/** Fallback if primary unavailable */
 	fallback: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-	/** Legacy reasoning model (no tool calling) */
-	legacy: "@cf/qwen/qwq-32b",
 } as const;

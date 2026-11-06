@@ -15,7 +15,7 @@
  * runs in a row raise an alert.
  */
 
-import { WorkersAIProvider } from "../llm/workers-ai";
+import { REFLECTION_MODELS, WorkersAIProvider } from "../llm/workers-ai";
 import {
 	type FlaggedIssueSummary,
 	type ReflectionChange,
@@ -494,7 +494,7 @@ async function runLegacyReflection(
 	storage: R2Storage,
 	date: string,
 ): Promise<ReflectionResult> {
-	const llm = new WorkersAIProvider(env.AI);
+	const llm = new WorkersAIProvider(env.AI, env.REFLECTION_MODEL ?? REFLECTION_MODELS.primary);
 
 	// 1. Gather context
 	const context = await gatherContext(storage, date);

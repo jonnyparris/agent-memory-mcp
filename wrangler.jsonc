@@ -54,7 +54,7 @@
 	// Optional: REFLECTION_FOCUS pins one focus id; REFLECTION_HYGIENE="false"
 	// disables the whitespace tidy.
 	"vars": {
-		"REFLECTION_MODEL": "@cf/deepseek-ai/deepseek-v4-flash-0731",
+		"REFLECTION_MODEL": "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
 		"USE_AGENTIC_REFLECTION": "true"
 	}
 }

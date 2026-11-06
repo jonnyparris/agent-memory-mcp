@@ -20,7 +20,7 @@ export interface Env {
 	CHAT_WEBHOOK_URL?: string;
 	/** Chat space ID to post notifications to (optional, for scheduled reflection notifications) */
 	CHAT_WEBHOOK_SPACE_ID?: string;
-	/** Deep-analysis model for reflection (default: @cf/deepseek-ai/deepseek-v4-flash-0731) */
+	/** Deep-analysis model for reflection (default: @cf/deepseek-ai/deepseek-v4.1-flash-1017) */
 	REFLECTION_MODEL?: string;
 	/** Force a reflection focus id instead of the weekday rotation. */
 	REFLECTION_FOCUS?: string;

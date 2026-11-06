@@ -9,7 +9,7 @@ declare namespace Cloudflare {
 	interface Env {
 		MEMORY_BUCKET: R2Bucket;
 		AI: Ai;
-		REFLECTION_MODEL: "@cf/moonshotai/kimi-k2.6";
+		REFLECTION_MODEL: "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
 		USE_AGENTIC_REFLECTION: "true";
 		MEMORY_AUTH_TOKEN: string;
 		ARIA_CHAT_AUTH_KEY: string;
