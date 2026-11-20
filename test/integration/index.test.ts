@@ -48,7 +48,12 @@ function scriptedAI(vectors: Record<string, number[]>) {
 	};
 }
 
-function seedLegacy(state: DurableObjectState, path: string, vector: number[]): void {
+function seedLegacy(
+	state: DurableObjectState,
+	path: string,
+	vector: number[] | string,
+	updatedAt = Date.now(),
+): void {
 	state.storage.sql.exec(`
 		CREATE TABLE IF NOT EXISTS memories (
 			path TEXT PRIMARY KEY,
@@ -59,9 +64,34 @@ function seedLegacy(state: DurableObjectState, path: string, vector: number[]): 
 	state.storage.sql.exec(
 		"INSERT OR REPLACE INTO memories (path, embedding, updated_at) VALUES (?, ?, ?)",
 		path,
-		new TextEncoder().encode(JSON.stringify(vector)),
-		Date.now(),
+		new TextEncoder().encode(typeof vector === "string" ? vector : JSON.stringify(vector)),
+		updatedAt,
 	);
+}
+
+function tableExists(state: DurableObjectState, name: string): boolean {
+	return (
+		[
+			...state.storage.sql.exec(
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+				name,
+			),
+		].length > 0
+	);
+}
+
+function schemaVersion(state: DurableObjectState): string | undefined {
+	return [
+		...state.storage.sql.exec<{ value: string }>(
+			"SELECT value FROM meta WHERE key = 'schema_version'",
+		),
+	][0]?.value;
+}
+
+/** Pretend the DO is on schema v2 and freshly woken, so init runs again. */
+function rewindToV2(instance: MemoryIndex, state: DurableObjectState): void {
+	state.storage.sql.exec("UPDATE meta SET value = '2' WHERE key = 'schema_version'");
+	(instance as unknown as { vectors: unknown }).vectors = null;
 }
 
 describe("MemoryIndex", () => {
@@ -79,12 +109,7 @@ describe("MemoryIndex", () => {
 				expect(hits[0].id).toBe("memory/a.md");
 
 				// Old table is dropped once its vectors are copied.
-				const old = [
-					...state.storage.sql.exec(
-						"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'",
-					),
-				];
-				expect(old).toHaveLength(0);
+				expect(tableExists(state, "memories")).toBe(false);
 
 				const { paths } = await instance.indexedPaths();
 				expect(paths).toEqual([
@@ -100,31 +125,83 @@ describe("MemoryIndex", () => {
 		);
 	});
 
-	it("drops the old memories table on a v2 index without re-migrating", async () => {
+	it("drops the old table on a v2 index and ignores rows the index has superseded", async () => {
 		await withIndex(async (instance, state) => {
-			// A DO already on v2: new tables populated, old table still present.
+			// A DO already on v2: new tables populated, old table still present
+			// with a row v2 already copied (older than the current index).
 			await instance.update({ path: "memory/kept.md", content: "current content" });
-			seedLegacy(state, "memory/stale.md", axisVector(3));
-			state.storage.sql.exec("UPDATE meta SET value = '2' WHERE key = 'schema_version'");
+			seedLegacy(state, "memory/kept.md", axisVector(3), 1);
+			rewindToV2(instance, state);
 
-			// Clear the in-memory cache so the next call re-runs init, as a
-			// freshly woken DO would.
-			(instance as unknown as { vectors: unknown }).vectors = null;
 			const stats = await instance.stats();
 			expect(stats).toMatchObject({ indexed_files: 1, legacy_files: 0 });
+			expect(tableExists(state, "memories")).toBe(false);
+			expect(schemaVersion(state)).toBe("3");
+		});
+	});
 
-			const old = [
-				...state.storage.sql.exec(
-					"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'",
-				),
-			];
-			expect(old).toHaveLength(0);
-			const version = [
-				...state.storage.sql.exec<{ value: string }>(
-					"SELECT value FROM meta WHERE key = 'schema_version'",
-				),
-			][0]?.value;
-			expect(version).toBe("3");
+	it("on a v2 index, flags only newer versions of indexed paths", async () => {
+		await withIndex(async (instance, state) => {
+			// The frozen pre-0.3 copy: one path edited by old code during a
+			// rollback (newer than the index), one deleted or pruned since v2.
+			await instance.update({ path: "memory/edited.md", content: "old content" });
+			await instance.update({ path: "memory/current.md", content: "current content" });
+			seedLegacy(state, "memory/edited.md", axisVector(3), Date.now() + 60_000);
+			seedLegacy(state, "memory/deleted.md", axisVector(4), 1);
+			rewindToV2(instance, state);
+
+			const { paths } = await instance.indexedPaths();
+			expect(paths).toEqual([
+				{ path: "memory/current.md", legacy: false },
+				{ path: "memory/edited.md", legacy: true },
+			]);
+			expect(tableExists(state, "memories")).toBe(false);
+			expect(schemaVersion(state)).toBe("3");
+
+			// reindex rewrites a flagged file as plain chunks.
+			await instance.update({ path: "memory/edited.md", content: "new content" });
+			expect((await instance.stats()).legacy_files).toBe(0);
+		});
+	});
+
+	it("flags and drops a memories table recreated after v3 by a rollback", async () => {
+		await withIndex(async (instance, state) => {
+			await instance.update({ path: "memory/current.md", content: "current content" });
+			expect(schemaVersion(state)).toBe("3");
+
+			// Pre-0.3 code recreates the table and never touches `meta`.
+			seedLegacy(state, "memory/new.md", axisVector(4));
+			seedLegacy(state, "memory/reflections/archive/2026-10-01.md", axisVector(5));
+			(instance as unknown as { vectors: unknown }).vectors = null;
+
+			const { paths } = await instance.indexedPaths();
+			expect(paths).toEqual([
+				{ path: "memory/current.md", legacy: false },
+				{ path: "memory/new.md", legacy: true },
+			]);
+			expect(tableExists(state, "memories")).toBe(false);
+			expect(schemaVersion(state)).toBe("3");
+		});
+	});
+
+	it("keeps an unreadable v1 vector as a legacy path for reindex", async () => {
+		await withIndex(async (instance, state) => {
+			seedLegacy(state, "memory/good.md", axisVector(0));
+			seedLegacy(state, "memory/broken.md", "not json");
+
+			const stats = await instance.stats();
+			expect(stats).toMatchObject({ indexed_files: 2, chunks: 1, legacy_files: 2 });
+			expect(tableExists(state, "memories")).toBe(false);
+		});
+	});
+
+	it("bumps a v2 index with no old table to v3", async () => {
+		await withIndex(async (instance, state) => {
+			await instance.update({ path: "memory/a.md", content: "content" });
+			rewindToV2(instance, state);
+
+			expect(await instance.stats()).toMatchObject({ indexed_files: 1, legacy_files: 0 });
+			expect(schemaVersion(state)).toBe("3");
 		});
 	});
 

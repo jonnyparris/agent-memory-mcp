@@ -333,8 +333,13 @@ Older versions kept one vector per file in an HNSW graph. On first start the
 new code copies those vectors over, so search keeps working, but they have no
 keyword entries and still cover only the first 20,000 characters of each file.
 Run `reindex` (scope `memory`, then `conversations`) until `remaining` is 0, or
-let the daily cron do it 100 files at a time. The old `memories` table is left
-in place so a rollback still works.
+let the daily cron do it 100 files at a time.
+
+The old `memories` table is deleted on the first start after updating
+(schema v3), and again on any later start where a rollback recreated it. Before that,
+any indexed file it holds a newer vector for is marked for `reindex`. Versions before
+0.3 read only that table, so rolling back to one gives an empty index. To
+recover, update again and run `reindex`.
 
 Why the change: on a 42-query test set from real use, the HNSW index found the
 right file in the top 5 for 55% of queries. Chunks plus keyword search found

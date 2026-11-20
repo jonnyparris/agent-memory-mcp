@@ -229,11 +229,23 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 			[...sql.exec<{ value: string }>("SELECT value FROM meta WHERE key = 'schema_version'")][0]
 				?.value ?? 0,
 		);
-		if (version < SCHEMA_VERSION) {
+		// Pre-0.3 code writes only `memories` and never touches `meta`, so the
+		// table can come back after v3 if the deploy is rolled back. Check for
+		// it on every wake-up, not only on a version bump.
+		const hasOld =
+			[...sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'")]
+				.length > 0;
+		if (version < SCHEMA_VERSION || hasOld) {
 			this.ctx.storage.transactionSync(() => {
 				if (version < 2) this.migrateFromV1();
 				// v3: the pre-chunking `memories` table was kept after v2 only so a
-				// rollback would find it. It has been copied into `chunks`; drop it.
+				// rollback would find it. Before dropping it, flag what it knows
+				// better than `files` does, so `reindex` re-embeds it from storage.
+				// On a v2 index the table is the frozen pre-0.3 copy: a path missing
+				// from `files` was deleted or pruned since, so only newer versions
+				// of indexed paths count. On v1 (unreadable vectors) and on a table
+				// recreated after v3 (a rollback), missing paths count too.
+				if (hasOld) this.flagStaleLegacyPaths(version !== 2);
 				sql.exec("DROP TABLE IF EXISTS memories");
 				sql.exec(
 					"INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
@@ -266,7 +278,8 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 	 * `reindex` re-embeds them from storage.
 	 *
 	 * The `memories` table is dropped straight after (schema v3), in the same
-	 * transaction. Rolling back past v2 would need a reindex.
+	 * transaction. Pre-0.3 code reads only that table, so rolling back to it
+	 * gives an empty index. To recover, roll forward again and run `reindex`.
 	 */
 	private migrateFromV1(): void {
 		const sql = this.ctx.storage.sql;
@@ -294,6 +307,32 @@ export class MemoryIndex extends DurableObject<DOEnv> implements MemoryIndexRpc 
 				"INSERT OR IGNORE INTO chunks (path, idx, text, embedding) VALUES (?, 0, NULL, ?)",
 				row.path,
 				vectorToBlob(vector),
+			);
+		}
+	}
+
+	/**
+	 * Mark `memories` paths as legacy where the table has a newer version than
+	 * `files`, or (with `includeMissing`) where `files` has no row at all.
+	 * Denylisted paths are skipped. A flagged path keeps any chunks it has
+	 * until `reindex` replaces them; one gone from storage is removed by `prune`.
+	 */
+	private flagStaleLegacyPaths(includeMissing: boolean): void {
+		const sql = this.ctx.storage.sql;
+		const rows = [
+			...sql.exec<{ path: string; updated_at: number; indexed_at: number | null }>(
+				`SELECT m.path, m.updated_at, f.updated_at AS indexed_at
+				 FROM memories m LEFT JOIN files f ON f.path = m.path`,
+			),
+		];
+		for (const row of rows) {
+			const stale = row.indexed_at === null ? includeMissing : row.updated_at > row.indexed_at;
+			if (!stale || indexSkipReason(row.path) !== null) continue;
+			sql.exec(
+				`INSERT INTO files (path, updated_at, legacy) VALUES (?, ?, 1)
+				 ON CONFLICT(path) DO UPDATE SET legacy = 1, updated_at = excluded.updated_at`,
+				row.path,
+				row.updated_at,
 			);
 		}
 	}
