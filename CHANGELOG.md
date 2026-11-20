@@ -25,6 +25,17 @@ number goes up for new features, the last number for fixes.
 
 ### Fixes
 
+- **The old search table is deleted.** Version 0.3 copied the pre-0.3
+  `memories` table into the new index and kept it, so a rollback would still
+  find it. It is now deleted the first time each index starts. Before that,
+  any indexed file the old table holds a newer vector for (written by old code
+  during a rollback) is marked for `reindex`. If a rollback to a version
+  before 0.3 recreates the table later, the next start marks its files for
+  `reindex` and deletes it again. Denylisted paths are skipped when marking.
+
+  **Do you need to do anything?** Only if you want to roll back to a version
+  before 0.3: do it before you update. After this update, a version before 0.3
+  finds an empty index. To recover, update again and run `reindex`.
 - **`write` refuses a read response written back as a file.** Some clients
   see `read`'s reply only as text: a `Read <path> (N bytes)` line, then
   JSON. Agents have edited that text and written all of it back, which
