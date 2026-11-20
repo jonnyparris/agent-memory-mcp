@@ -11,6 +11,13 @@ import { indexWrite } from "../search/index-write";
 import { WrappedContentError, isReadWrapper } from "../search/read-wrapper";
 import type { R2Storage } from "../storage/r2";
 import type { Env } from "../types";
+import {
+	MAX_SPLITS_PER_RUN,
+	SplitError,
+	computeSplit,
+	splitConflict,
+	splitPathProblem,
+} from "./split";
 
 /**
  * Largest deletion an auto-applied "quick fix" may make, in characters.
@@ -48,9 +55,13 @@ const READ_PAGE_SIZE = 15000;
  */
 export interface ProposedEdit {
 	path: string;
-	action: "replace" | "append" | "delete" | "create";
+	action: "replace" | "append" | "delete" | "create" | "split";
 	content?: string;
 	reason: string;
+	/** split: the file the sections move to. */
+	to?: string;
+	/** split: exact heading lines of the sections to move. */
+	headings?: string[];
 }
 
 /**
@@ -123,6 +134,12 @@ export async function executeReflectionTool(
 
 			case "proposeEdit":
 				return await executePropose(args as unknown as ProposedEdit, context);
+
+			case "proposeSplit":
+				return await executeProposeSplit(
+					args as { path: string; to: string; headings: string[]; reason: string },
+					context,
+				);
 
 			case "autoApply":
 				return await executeAutoApply(
@@ -298,6 +315,19 @@ async function executePropose(
 		};
 	}
 
+	// Only replace, append and create get here (delete returned above); "split" has its own tool.
+	if (!["replace", "append", "create"].includes(args.action)) {
+		return { success: false, error: `Unknown action: ${String(args.action)}` };
+	}
+
+	// A create or replace was written from the file before a staged split moved
+	// sections out of it (or into it), so applying it after the split would
+	// undo the move or overwrite the moved text.
+	const conflict = splitConflict(args, context.proposedEdits);
+	if (conflict) {
+		return { success: false, error: `Refused: ${conflict}. Use append, or flagIssue.` };
+	}
+
 	// Validate the edit
 	let existing: { content: string } | null = null;
 	if (args.action !== "create") {
@@ -358,6 +388,91 @@ async function executePropose(
 		success: true,
 		result: {
 			message: `Edit staged: ${args.action} ${args.path}`,
+			totalProposed: context.proposedEdits.length,
+		},
+	};
+}
+
+/**
+ * Stage a split: whole sections of a large file move verbatim to a sibling
+ * file, done by code at apply time. Checked now against the file as it is, so
+ * the model hears about a bad heading while it can still fix it.
+ */
+async function executeProposeSplit(
+	args: { path: string; to: string; headings: string[]; reason: string },
+	context: ToolExecutionContext,
+): Promise<ToolResult> {
+	if (typeof args?.reason !== "string" || !args.reason.trim()) {
+		return { success: false, error: "reason is required" };
+	}
+	if (!Array.isArray(args.headings)) {
+		return { success: false, error: "headings must be a list of exact heading lines" };
+	}
+	const date = new Date().toISOString().slice(0, 10);
+	// Paths first: a bad or forbidden path should not cost two reads.
+	const pathErr = splitPathProblem(args.path, args.to, date);
+	if (pathErr) return { success: false, error: `Split refused: ${pathErr}` };
+
+	const splits = context.proposedEdits.filter((e) => e.action === "split");
+	if (splits.length >= MAX_SPLITS_PER_RUN) {
+		return {
+			success: false,
+			error: `Refused: ${MAX_SPLITS_PER_RUN} splits are staged already; the next run can do more.`,
+		};
+	}
+	const conflict = context.proposedEdits.find(
+		(e) =>
+			(e.action === "replace" || e.action === "create") &&
+			(e.path === args.path || e.path === args.to),
+	);
+	if (conflict) {
+		return {
+			success: false,
+			error: `Refused: a ${conflict.action} is already staged for ${conflict.path}; a split would fight it. Flag the size instead.`,
+		};
+	}
+	// One split per file per run, counting both ends: no chains (A -> B, B -> C)
+	// and no two sources into one target.
+	const staged = splits.find((e) => [e.path, e.to].some((p) => p === args.path || p === args.to));
+	if (staged) {
+		return {
+			success: false,
+			error: `Refused: a split (${staged.path} -> ${staged.to}) already touches one of these files this run. One split per file per night.`,
+		};
+	}
+
+	const source = await context.storage.read(args.path);
+	if (!source) return { success: false, error: `File not found: ${args.path}` };
+	const target = await context.storage.read(args.to);
+
+	let result: ReturnType<typeof computeSplit>;
+	try {
+		result = computeSplit({
+			sourcePath: args.path,
+			targetPath: args.to,
+			source: source.content,
+			target: target?.content ?? null,
+			headings: args.headings,
+			date,
+		});
+	} catch (e) {
+		if (e instanceof SplitError) return { success: false, error: `Split refused: ${e.message}` };
+		throw e;
+	}
+
+	context.proposedEdits.push({
+		path: args.path,
+		action: "split",
+		to: args.to,
+		headings: args.headings.map((h) => h.replace(/\s+$/, "")),
+		reason: args.reason,
+	});
+	return {
+		success: true,
+		result: {
+			message: `Split staged: ${args.headings.length} section(s), ${result.movedChars} characters, ${args.path} -> ${args.to}. Applied after the run.`,
+			sourceAfter: result.source.length,
+			targetAfter: result.target.length,
 			totalProposed: context.proposedEdits.length,
 		},
 	};

@@ -233,13 +233,14 @@ Every day at 6am UTC the server reviews your memory and cleans it up. It's a jan
 | `learnings` | Contradictory or duplicated lessons |
 | `projects` | Stale project status, contradictions between project notes |
 | `people` | Contradictory roles, duplicate people, stale preferences |
-| `structure` | Misplaced files, duplicate folders, files that should be split |
+| `structure` | Misplaced files, duplicate folders; splits files over ~50KB |
 | `patterns` | Patterns/reference docs that contradict newer learnings |
 
 The model can **flag** an issue for you (the default) or **edit** a file. Edits are applied automatically, with guards:
 
 - whole-file deletes are never applied; they are flagged
 - a `replace` that would drop more than 30% of a file is refused and flagged
+- a **split** moves whole sections of a file over ~40,000 characters into a file named after it (`log.md` → `log-2026-10.md` or `log/…`). The model only names the headings; code moves the text verbatim and leaves a `Moved to [[…]]` line. The target is written first, so a failure part-way leaves a copy, never a loss, and a retry skips it. At most 3 splits a run; a create or replace on either file in the same run is refused; Work HQ's current-month journal archive is never split
 - every write snapshots the previous content, so `history`/`rollback` can undo it
 
 **Budgets.** 25 turns and about 11 minutes of wall time (a cron-triggered Worker gets 15). The model is nudged at the halfway mark if it hasn't recorded anything, warned near the end, and its last turn can only record findings or finish. A run that stops early is reported as **incomplete**. It never says "looks good" unless the model actually finished.
@@ -280,7 +281,7 @@ This is **not the same as** a deep reflection workflow you might drive from your
 
 Concretely:
 
-- **Cron output** lives in `memory/reflections/pending/` and `memory/reflections/archive/`. Expect terse summaries and small auto-fixes.
+- **Cron output** lives in `memory/reflections/pending/` and `memory/reflections/archive/`. Expect terse summaries, small auto-fixes and the occasional split of a large file.
 - **Agent-driven deep reflection output** should live somewhere else (e.g. `memory/workload/plans/{date}-improvement-proposals.md`). Don't conflate the two — a healthy `memory/reflections/archive/` does not mean your weekly reflection ran.
 
 If your agent has a separate deep-reflection workflow, watch its output directory directly. The cron is a janitor; the agent is the architect.

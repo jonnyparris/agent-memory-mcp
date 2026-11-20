@@ -777,4 +777,109 @@ describe("MCP Tools", () => {
 			expect(files.some((f: { path: string }) => f.path.startsWith("_history/"))).toBe(false);
 		});
 	});
+
+	describe("apply_reflection_changes split", () => {
+		it("applies a staged split and refuses a create on its target", async () => {
+			const src = "memory/split-it/log.md";
+			const to = "memory/split-it/log-2026-10.md";
+			const sec = (n: string) => `## ${n}\n\n- ${"y".repeat(15000)}\n\n`;
+			const content = `# Log\n\nIntro.\n\n${sec("November 2")}${sec("November 1")}${sec("October 31")}`;
+			await env.MEMORY_BUCKET.put(src, content);
+			const date = "2099-01-02";
+			const staged = {
+				date,
+				summary: "s",
+				proposedEdits: [
+					{ path: src, action: "split", to, headings: ["## October 31"], reason: "45K" },
+					{ path: to, action: "create", content: "clobber", reason: "bad" },
+				],
+				autoAppliedFixes: [],
+				flaggedIssues: [],
+				deepAnalysisIterations: 1,
+			};
+			await env.MEMORY_BUCKET.put(
+				`memory/reflections/pending/${date}.json`,
+				JSON.stringify(staged),
+			);
+			await env.MEMORY_BUCKET.put(`memory/reflections/pending/${date}.md`, "# Reflection");
+
+			const result = parseToolJson(
+				(await callTool("apply_reflection_changes", { date })).result.content[0].text,
+			);
+			expect(result.results).toEqual([
+				// The test pool has no AI binding: both files are saved and the
+				// index failure comes back as a warning, not a failure.
+				expect.objectContaining({
+					path: src,
+					action: "split",
+					success: true,
+					warning: expect.stringContaining("search index update failed"),
+				}),
+				expect.objectContaining({ path: to, action: "create", success: false }),
+			]);
+			// The refused create failed, so the reflection stays pending.
+			expect(result.archived).toBe(false);
+
+			const after = await (await env.MEMORY_BUCKET.get(src))?.text();
+			const moved = await (await env.MEMORY_BUCKET.get(to))?.text();
+			expect(after).not.toContain("## October 31");
+			expect(after).toMatch(
+				/Moved to \[\[memory\/split-it\/log-2026-10\]\] on \d{4}-\d{2}-\d{2}: October 31\./,
+			);
+			expect(moved).toContain(`## October 31\n\n- ${"y".repeat(15000)}`);
+			expect(moved).not.toContain("clobber");
+
+			// Re-applying the split is a no-op.
+			const again = parseToolJson(
+				(await callTool("apply_reflection_changes", { date, editIndices: [1] })).result.content[0]
+					.text,
+			);
+			expect(again.results).toEqual([
+				expect.objectContaining({
+					action: "split",
+					success: true,
+					warning: expect.stringContaining("already applied"),
+				}),
+			]);
+			expect(await (await env.MEMORY_BUCKET.get(src))?.text()).toBe(after);
+		});
+
+		it("applies a create on its own when the split beside it is not selected", async () => {
+			const src = "memory/split-sel/log.md";
+			const to = "memory/split-sel/log-2026-10.md";
+			const date = "2099-01-04";
+			await env.MEMORY_BUCKET.put(
+				`memory/reflections/pending/${date}.json`,
+				JSON.stringify({
+					date,
+					summary: "s",
+					proposedEdits: [
+						{ path: src, action: "split", to, headings: ["## October 31"], reason: "45K" },
+						{ path: to, action: "create", content: "chosen by hand", reason: "r" },
+					],
+					autoAppliedFixes: [],
+					flaggedIssues: [],
+					deepAnalysisIterations: 1,
+				}),
+			);
+			await env.MEMORY_BUCKET.put(`memory/reflections/pending/${date}.md`, "# Reflection");
+			const res = parseToolJson(
+				(await callTool("apply_reflection_changes", { date, editIndices: [2], archive: false }))
+					.result.content[0].text,
+			);
+			expect(res.results).toEqual([{ path: to, action: "create", success: true }]);
+			expect(await (await env.MEMORY_BUCKET.get(to))?.text()).toBe("chosen by hand");
+		});
+
+		it("refuses a markdown-only reflection that has a split", async () => {
+			const date = "2099-01-03";
+			await env.MEMORY_BUCKET.put(
+				`memory/reflections/pending/${date}.md`,
+				"# Reflection\n\n### 1. SPLIT: memory/a.md → memory/a-old.md\n\n**Reason:** big\n",
+			);
+			const res = await callTool("apply_reflection_changes", { date });
+			expect(res.result.isError).toBe(true);
+			expect(res.result.content[0].text).toContain("sidecar is missing");
+		});
+	});
 });

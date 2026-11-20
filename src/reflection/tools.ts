@@ -15,9 +15,10 @@ import type { LLMTool } from "../llm/types";
  * 2. Read full file contents
  * 3. List directory contents
  * 4. Propose edits (auto-applied after the run, with guards)
- * 5. Flag issues for a human
- * 6. Auto-apply low-risk fixes (typos, formatting)
- * 7. Finish reflection with a summary
+ * 5. Propose splitting a large file (sections move verbatim, done by code)
+ * 6. Flag issues for a human
+ * 7. Auto-apply low-risk fixes (typos, formatting)
+ * 8. Finish reflection with a summary
  */
 export const REFLECTION_TOOLS: LLMTool[] = [
 	{
@@ -124,6 +125,36 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 		},
 	},
 	{
+		name: "proposeSplit",
+		description:
+			"Split a large memory file: move whole sections, named by their exact heading lines, into a sibling file. Code does the move verbatim after the run (nothing is rewritten), leaves a 'Moved to [[to]]' line in the source, and appends to `to` if it exists. Each section runs from its heading to the next heading of the same or higher level. Use for files over ~50KB: move the oldest dated sections or closed ones (killed, completed, archived) and keep the intro and the newest or live sections. A wrong heading returns the file's outline so you can retry.",
+		parameters: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "The large file, e.g. 'memory/projects/refresh-log.md'",
+				},
+				to: {
+					type: "string",
+					description:
+						"File the sections move to, named after the source: '<source name>-<suffix>.md' or '<source name>/<name>.md'. For memory/projects/refresh-log.md: 'memory/projects/refresh-log-2026-10.md', 'memory/projects/refresh-log-archive.md' or 'memory/projects/refresh-log/2026-10.md'",
+				},
+				headings: {
+					type: "array",
+					items: { type: "string" },
+					description:
+						"Exact heading lines of the sections to move, with their #'s, e.g. ['## October 31 Refresh', '## October 30 Refresh']",
+				},
+				reason: {
+					type: "string",
+					description: "Why this split: the file's size and what moves",
+				},
+			},
+			required: ["path", "to", "headings", "reason"],
+		},
+	},
+	{
 		name: "autoApply",
 		description:
 			"Apply a low-risk fix immediately without human review. Only use for: typo fixes in prose (not code), trailing newlines, extra whitespace, duplicate removal. The change will be applied immediately.",
@@ -158,7 +189,7 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 	{
 		name: "flagIssue",
 		description:
-			"Record a problem for a human to fix, without editing anything. Use when the fix is too big or too risky to write as an edit (for example a large file that needs restructuring, or a contradiction you can't resolve).",
+			"Record a problem for a human to fix, without editing anything. Use when the fix is too big or too risky to write as an edit (for example a contradiction you can't resolve, or a large file with no heading to cut at). For a large file that has headings, use proposeSplit (except this month's Work HQ journal archive, which is left alone).",
 		parameters: {
 			type: "object",
 			properties: {
@@ -188,7 +219,7 @@ export const REFLECTION_TOOLS: LLMTool[] = [
 				},
 				proposedChanges: {
 					type: "number",
-					description: "Total number of edits proposed with proposeEdit",
+					description: "Total number of edits proposed with proposeEdit or proposeSplit",
 				},
 				autoApplied: {
 					type: "number",

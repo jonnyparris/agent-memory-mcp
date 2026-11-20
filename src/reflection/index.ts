@@ -32,6 +32,7 @@ import {
 	runAgenticReflection,
 } from "./agentic";
 import { type RunRecord, decideNotification, recordRun } from "./run-history";
+import { applySplit, splitConflict } from "./split";
 import { type StagedReflection, archiveReflection, writeStagedReflection } from "./staging";
 import { replaceShrinkError } from "./tool-executor";
 
@@ -245,11 +246,25 @@ async function runAgenticDryRun(
 		edits: r.proposedEdits.map((e) => ({
 			path: e.path,
 			action: e.action,
-			reason: `${e.reason} [content: ${e.content?.length ?? 0} chars]`,
+			reason:
+				e.action === "split"
+					? `${e.reason} [split to ${e.to}: ${e.headings?.length ?? 0} section(s)]`
+					: `${e.reason} [content: ${e.content?.length ?? 0} chars]`,
 		})),
 		flaggedIssues: r.flaggedIssues.map((f) => ({ path: f.path, issue: f.issue })),
 		error: r.error,
 	};
+}
+
+/** How a refused edit reads in the report. */
+function refusedIssue(e: ReflectionChange): string {
+	if (e.action === "delete") {
+		return `Reflection proposed deleting this file and was refused: ${e.reason}`;
+	}
+	if (e.reason.startsWith("REFUSED (a split")) {
+		return `Reflection proposed a ${e.action} of a file a split moves sections out of or into, and it was refused: ${e.reason}`;
+	}
+	return `Reflection proposed a rewrite of this file and was refused: ${e.reason}`;
 }
 
 /**
@@ -282,9 +297,27 @@ async function runAgenticReflectionFlow(
 	const failedEdits: string[] = [...agenticResult.writeFailures];
 	const refusedEdits: ReflectionChange[] = [];
 
+	// A create/replace on a file a split touches was written from the pre-split
+	// text; applying it would undo the move. The propose step refuses that
+	// pairing; this re-checks for persisted or hand-built proposals.
 	for (const edit of agenticResult.proposedEdits) {
 		try {
+			const conflict = splitConflict(edit, agenticResult.proposedEdits);
+			if (conflict) {
+				refusedEdits.push({
+					path: edit.path,
+					action: edit.action,
+					reason: `REFUSED (${conflict}): ${edit.reason}`,
+				});
+				continue;
+			}
 			switch (edit.action) {
+				case "split": {
+					// Both files saved; an index failure is reported, not retried.
+					const r = await applySplit(env, storage, edit, date);
+					if (r.indexError) failedEdits.push(`split: ${edit.path} -> ${edit.to} — ${r.indexError}`);
+					break;
+				}
 				case "replace":
 				case "create": {
 					// Defence in depth: the propose step already refuses a replace
@@ -366,13 +399,7 @@ async function runAgenticReflectionFlow(
 		// whole point of refusing is that a human decides.
 		flaggedIssues: [
 			...agenticResult.flaggedIssues,
-			...refusedEdits.map((e) => ({
-				path: e.path,
-				issue:
-					e.action === "delete"
-						? `Reflection proposed deleting this file and was refused: ${e.reason}`
-						: `Reflection proposed a rewrite of this file and was refused: ${e.reason}`,
-			})),
+			...refusedEdits.map((e) => ({ path: e.path, issue: refusedIssue(e) })),
 		],
 		deepAnalysisIterations: agenticResult.deepAnalysisIterations,
 		deepAnalysisFinished: agenticResult.deepAnalysisFinished,
@@ -470,13 +497,7 @@ async function runAgenticReflectionFlow(
 		failedEdits: failedEdits.length > 0 ? failedEdits : undefined,
 		flaggedIssues: [
 			...agenticResult.flaggedIssues.map((f) => ({ path: f.path, issue: f.issue })),
-			...refusedEdits.map((e) => ({
-				path: e.path,
-				issue:
-					e.action === "delete"
-						? `Reflection proposed deleting this file and was refused: ${e.reason}`
-						: `Reflection proposed a rewrite of this file and was refused: ${e.reason}`,
-			})),
+			...refusedEdits.map((e) => ({ path: e.path, issue: refusedIssue(e) })),
 		],
 		error:
 			agenticResult.error ??

@@ -38,6 +38,8 @@ export interface LLMTool {
 				type: string;
 				description: string;
 				enum?: string[];
+				/** Element schema when type is "array". */
+				items?: { type: string };
 			}
 		>;
 		required?: string[];

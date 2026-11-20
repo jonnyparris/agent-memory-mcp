@@ -11,6 +11,7 @@ import {
 } from "./conversations";
 import { errResult, okResult, registerTool } from "./helpers";
 import { type JevAi, rerankSearchResults } from "./jev";
+import { applySplit, splitConflict } from "./reflection/split";
 import {
 	archiveReflection,
 	listPendingReflections,
@@ -1130,6 +1131,14 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 				if (!file) {
 					return errResult("Reflection not found", { date });
 				}
+				// The markdown fallback can't carry a split's target and headings, so
+				// dropping it silently could archive a reflection with its split unapplied.
+				if (/^###\s*\d+\.\s*SPLIT:/m.test(file.content)) {
+					return errResult(
+						"This reflection has a split but its JSON sidecar is missing; splits can only be applied from the sidecar",
+						{ date },
+					);
+				}
 				edits = parseProposedEditsFromMarkdown(file.content);
 			}
 
@@ -1147,10 +1156,42 @@ export function createServer(env: Env, ctx?: ExecutionContext): McpServer {
 			// 1-indexed to match the numbering in the rendered markdown.
 			const toApply = editIndices ? edits.filter((_, i) => editIndices.includes(i + 1)) : edits;
 
-			const results: Array<{ path: string; action: string; success: boolean; error?: string }> = [];
+			const results: Array<{
+				path: string;
+				action: string;
+				success: boolean;
+				error?: string;
+				warning?: string;
+			}> = [];
+			const today = new Date().toISOString().slice(0, 10);
 			for (const edit of toApply) {
 				try {
+					// Same rule as the cron apply: a create/replace written from the
+					// pre-split file must not run beside a split being applied now.
+					const conflict = splitConflict(edit, toApply);
+					if (conflict) {
+						results.push({
+							path: edit.path,
+							action: edit.action,
+							success: false,
+							error: `refused: ${conflict}`,
+						});
+						continue;
+					}
 					switch (edit.action) {
+						case "split": {
+							// Both files saved even when the index update failed, so the
+							// split counts as applied; a re-run is a no-op.
+							const r = await applySplit(env, storage, edit, today);
+							results.push({
+								path: edit.path,
+								action: edit.action,
+								success: true,
+								...(r.indexError ? { warning: r.indexError } : {}),
+								...(r.wrote ? {} : { warning: "already applied; nothing written" }),
+							});
+							break;
+						}
 						case "replace":
 						case "create":
 							if (edit.content) {

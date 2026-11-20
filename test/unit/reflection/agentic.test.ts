@@ -219,7 +219,12 @@ describe("runAgenticReflection", () => {
 		const lastTools = (calls[calls.length - 1][1].tools as Array<{ name: string }>).map(
 			(t) => t.name,
 		);
-		expect(lastTools.sort()).toEqual(["finishReflection", "flagIssue", "proposeEdit"]);
+		expect(lastTools.sort()).toEqual([
+			"finishReflection",
+			"flagIssue",
+			"proposeEdit",
+			"proposeSplit",
+		]);
 
 		// Earlier turns get the full tool set.
 		const firstTools = (calls[0][1].tools as Array<{ name: string }>).map((t) => t.name);
@@ -250,6 +255,7 @@ describe("runAgenticReflection", () => {
 			"finishReflection",
 			"flagIssue",
 			"proposeEdit",
+			"proposeSplit",
 		]);
 		const prompts = last[0]
 			.filter((m: { role: string }) => m.role === "user")

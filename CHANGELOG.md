@@ -10,6 +10,19 @@ number goes up for new features, the last number for fixes.
 
 ## [Unreleased]
 
+### New
+
+- **The nightly reflection can split a large file instead of only flagging
+  it.** A new `proposeSplit` tool names the sections to move (by their exact
+  heading lines) and a file next to the original. After the run, code moves
+  those sections word for word and leaves a "Moved to [[file]]" line where they
+  were. The model writes nothing except that pointer, so the 30% rewrite guard
+  doesn't apply. The target is written first; if anything fails part-way, the
+  sections are in both files and the next attempt skips the copies. A create
+  or replace on the same file in the same run is refused. `apply_reflection_changes`
+  applies splits too. The "Structure" focus now asks for a split for files
+  over about 50KB.
+
 ### Fixes
 
 - **`write` refuses a read response written back as a file.** Some clients

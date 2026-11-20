@@ -62,7 +62,12 @@ export const HARD_DEADLINE_MS = 11 * 60_000;
 const MAX_EMPTY_STOPS = 2;
 
 /** Tools the model may still use on its final turn. */
-const DEEP_ANALYSIS_FINAL_TOOLS = new Set(["proposeEdit", "flagIssue", "finishReflection"]);
+const DEEP_ANALYSIS_FINAL_TOOLS = new Set([
+	"proposeEdit",
+	"proposeSplit",
+	"flagIssue",
+	"finishReflection",
+]);
 
 const DEEP_ANALYSIS_SYSTEM_PROMPT = `You are an AI agent reviewing a personal memory store: markdown notes an engineering manager's coding agents read and write.
 
@@ -91,6 +96,9 @@ How to work:
   for small, safe changes, mainly append (a "See also" link, a "superseded
   by" note). replace overwrites the WHOLE file; only use it on a file you
   have read completely. A replace that drops over 30% of a file is refused.
+- proposeSplit: for a file too big to keep whole. Name the sections by
+  their exact heading lines and a sibling file; code moves them verbatim
+  after the run. Prefer it to flagging a file's size.
 - Report only what the files show now. Notes about past incidents that were
   fixed are history, not current problems.
 - One flag per problem. If several files share it, flag once and list them.
@@ -503,7 +511,7 @@ You have ${MAX_DEEP_ANALYSIS_ITERATIONS} turns. Make several tool calls per turn
 		tools: REFLECTION_TOOLS,
 		finalTools: DEEP_ANALYSIS_FINAL_TOOLS,
 		finishTool: "finishReflection",
-		recordTools: "flagIssue or proposeEdit",
+		recordTools: "flagIssue, proposeEdit or proposeSplit",
 		maxIterations: MAX_DEEP_ANALYSIS_ITERATIONS,
 		maxContextChars: DEEP_ANALYSIS_CONTEXT_CHARS,
 		maxTokens: 16384,

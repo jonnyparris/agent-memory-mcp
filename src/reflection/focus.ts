@@ -73,10 +73,12 @@ Use flagIssue. Don't rewrite people files.`,
 		instructions: `Review how memory is organised.
 - Flag files in the wrong folder (a project note at the top level, a plan outside plans/).
 - Flag folders that duplicate each other.
-- Flag files over ~50KB that should be split, and suggest the split (by topic or by month).
-- Don't flag the hub files for size when they already follow a split pattern: brag-sheet.md holds the current half-year (older halves in brag-sheet/), sessions.md the current month, learnings.md is an index over learnings/YYYY-MM*.md.
+- Split files over ~50KB with proposeSplit, not flagIssue. Read the file's headings, then move the oldest dated sections or the closed ones (killed, completed, archived, done) to a sibling file. Keep the intro and the newest or live sections in place. Names: by month '<name>-YYYY-MM.md', closed items '<name>-archive.md', otherwise '<name>-partN.md'. One split per file per night is enough; the next run can split again.
+- Work HQ journal archives (work-hq-journal-archive-YYYY-MM.md): Work HQ rewrites this month's file, so leave it alone; proposeSplit refuses it. A closed month can move older days to '<that name>-partN.md'. A single day over 50KB is fine as it is.
+- Hub files follow their own pattern; split them the same way only when they are over ~50KB: brag-sheet.md holds the current quarter (rows from earlier quarters go into the half-year file they belong to, brag-sheet/YYYY-H1.md or YYYY-H2.md), sessions.md the current month, learnings.md is an index over learnings/YYYY-MM*.md.
+- Plans and closed notes over 50KB that nobody writes to any more (plans/archive/, dated proposals) are fine as they are.
 - Generated companions (an .html report next to its .md summary) are fine as they are.
-Use flagIssue with the exact move or split you recommend.`,
+Use flagIssue for a misplaced file or a big file with no heading to cut at, with the exact move you recommend.`,
 		paths: [],
 	},
 	{

@@ -160,13 +160,17 @@ Review each proposed change below. To apply:
 2. **append**: Add the content to the end of the target file
 3. **create**: Create a new file with the content
 4. **delete**: Remove the target file
+5. **split**: Code moves the listed sections verbatim to the new file and leaves a pointer
 
 ${proposedEdits
 	.map(
-		(edit, i) => `### ${i + 1}. ${edit.action.toUpperCase()}: ${edit.path}
+		(
+			edit,
+			i,
+		) => `### ${i + 1}. ${edit.action.toUpperCase()}: ${edit.path}${edit.action === "split" && edit.to ? ` → ${edit.to}` : ""}
 
 **Reason:** ${edit.reason}
-
+${edit.action === "split" && edit.headings?.length ? `\n**Sections moved:**\n${edit.headings.map((h) => `- \`${escapeForMarkdown(h)}\``).join("\n")}\n` : ""}
 ${
 	edit.content
 		? `**Content:**
