@@ -65,7 +65,7 @@ Use flagIssue with the specific stale line quoted.`,
 - Flag preferences that contradict each other or AGENTS-style rules elsewhere in memory.
 - Flag duplicate entries for the same person.
 Use flagIssue. Don't rewrite people files.`,
-		paths: ["memory/people", "memory/preferences.md", "memory/soul.md", "memory/context/"],
+		paths: ["memory/people", "memory/preferences.md", "memory/soul.md"],
 	},
 	{
 		id: "structure",

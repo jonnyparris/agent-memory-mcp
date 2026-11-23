@@ -18,6 +18,7 @@ import type { R2Storage } from "../storage/r2";
 import type { Env } from "../types";
 import { type ReflectionFocus, focusForDate, inFocus } from "./focus";
 import { runHygiene } from "./hygiene";
+import { annotateFlags, loadDispositions, loadPriorFlags, priorFlagsPrompt } from "./prior-flags";
 import {
 	type AutoAppliedFix,
 	type FlaggedIssue,
@@ -169,7 +170,33 @@ export async function runAgenticReflection(
 	}
 
 	const inventory = await buildInventory(storage, focus);
-	const deep = await runDeepAnalysis(env, context, inventory, focus, model, options.clock);
+	const today = (options.now ?? new Date()).toISOString().slice(0, 10);
+	let prior: Awaited<ReturnType<typeof loadPriorFlags>> = [];
+	let dispositions: Awaited<ReturnType<typeof loadDispositions>> = [];
+	try {
+		[prior, dispositions] = await Promise.all([
+			loadPriorFlags(storage, focus.title, today),
+			loadDispositions(storage, today),
+		]);
+	} catch (e) {
+		// Context, not a requirement: run blind rather than not at all.
+		console.error(JSON.stringify({ event: "prior_flags_failed", error: String(e) }));
+	}
+	const deep = await runDeepAnalysis(
+		env,
+		context,
+		[inventory, priorFlagsPrompt(prior, dispositions)].filter(Boolean).join("\n\n"),
+		focus,
+		model,
+		options.clock,
+	);
+	const annotated = annotateFlags(context.flaggedIssues, prior, dispositions);
+	context.flaggedIssues.splice(0, context.flaggedIssues.length, ...annotated.flags);
+	if (annotated.suppressed.length > 0) {
+		console.log(
+			JSON.stringify({ event: "flags_suppressed_by_disposition", paths: annotated.suppressed }),
+		);
+	}
 
 	return {
 		success: deep.success,

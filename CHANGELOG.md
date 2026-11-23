@@ -12,6 +12,14 @@ number goes up for new features, the last number for fixes.
 
 ### New
 
+- **The nightly reflection remembers what it flagged last week.** Each focus
+  runs once a week, and every run used to start blind, so the same stale plans
+  were flagged on seven Mondays in a row with nothing marking them as old. Now
+  the model gets the last four runs' flags for its focus and re-checks them
+  first, and the card prefixes a repeat with `Repeat (flagged on N earlier runs
+  since <date>)`. A new file, `memory/meta/reflection-dispositions.md`, records
+  "keep this, decided" calls; flags on those paths are dropped.
+
 - **The nightly reflection can split a large file instead of only flagging
   it.** A new `proposeSplit` tool names the sections to move (by their exact
   heading lines) and a file next to the original. After the run, code moves
