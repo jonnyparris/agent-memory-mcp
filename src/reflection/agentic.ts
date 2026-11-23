@@ -171,7 +171,7 @@ export async function runAgenticReflection(
 
 	const inventory = await buildInventory(storage, focus);
 	const today = (options.now ?? new Date()).toISOString().slice(0, 10);
-	let prior: Awaited<ReturnType<typeof loadPriorFlags>> = [];
+	let prior: Awaited<ReturnType<typeof loadPriorFlags>> = { runs: [], flags: [] };
 	let dispositions: Awaited<ReturnType<typeof loadDispositions>> = [];
 	try {
 		[prior, dispositions] = await Promise.all([
@@ -180,7 +180,15 @@ export async function runAgenticReflection(
 		]);
 	} catch (e) {
 		// Context, not a requirement: run blind rather than not at all.
-		console.error(JSON.stringify({ event: "prior_flags_failed", error: String(e) }));
+		console.error(
+			JSON.stringify({
+				event: "prior_flags_failed",
+				focus: focus.title,
+				date: today,
+				error: String(e),
+				stack: e instanceof Error ? e.stack : undefined,
+			}),
+		);
 	}
 	const deep = await runDeepAnalysis(
 		env,
@@ -190,7 +198,12 @@ export async function runAgenticReflection(
 		model,
 		options.clock,
 	);
-	const annotated = annotateFlags(context.flaggedIssues, prior, dispositions);
+	const annotated = annotateFlags(
+		context.flaggedIssues,
+		prior,
+		dispositions,
+		context.modelFlags ?? new Set(),
+	);
 	context.flaggedIssues.splice(0, context.flaggedIssues.length, ...annotated.flags);
 	if (annotated.suppressed.length > 0) {
 		console.log(

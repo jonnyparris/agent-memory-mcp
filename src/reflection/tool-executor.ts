@@ -92,6 +92,8 @@ export interface ToolExecutionContext {
 	proposedEdits: ProposedEdit[];
 	autoAppliedFixes: AutoAppliedFix[];
 	flaggedIssues: FlaggedIssue[];
+	/** The entries of flaggedIssues that came from the flagIssue tool (the rest are system notices). */
+	modelFlags?: Set<FlaggedIssue>;
 	/** Writes whose storage step succeeded but index update failed. */
 	writeFailures: string[];
 	/** Record fixes without writing anything. Used by POST /reflect?dry_run=1. */
@@ -301,6 +303,9 @@ async function executePropose(
 	// unattended reflection run. Surface it for a human without staging it for
 	// the auto-apply phase. The apply phase refuses it independently as
 	// defense-in-depth for persisted or externally-constructed proposals.
+	const protectedError = protectedPathError(args.path);
+	if (protectedError) return { success: false, error: protectedError };
+
 	if (args.action === "delete") {
 		context.flaggedIssues.push({
 			path: args.path,
@@ -513,6 +518,9 @@ async function executeAutoApply(
 	},
 	context: ToolExecutionContext,
 ): Promise<ToolResult> {
+	const protectedError = protectedPathError(args.path);
+	if (protectedError) return { success: false, error: protectedError };
+
 	// Read current file
 	const file = await context.storage.read(args.path);
 	if (!file) {
@@ -675,7 +683,9 @@ async function executeFlagIssue(
 		return { success: false, error: "issue is required: say what is wrong and what to do" };
 	}
 	if (!context.flaggedIssues.some((f) => f.path === args.path && f.issue === args.issue)) {
-		context.flaggedIssues.push({ path: args.path, issue: args.issue });
+		const flag = { path: args.path, issue: args.issue };
+		context.flaggedIssues.push(flag);
+		context.modelFlags?.add(flag);
 	}
 
 	return {
@@ -702,6 +712,25 @@ export function createExecutionContext(
 		proposedEdits: [],
 		autoAppliedFixes: [],
 		flaggedIssues: [],
+		modelFlags: new Set(),
 		writeFailures: [],
 	};
+}
+
+/**
+ * This job's own state and the human's decisions about it. The model may
+ * read none of it (it is hidden from listings) and write none of it: a write
+ * to memory/meta/reflection-dispositions.md would let it silence its own
+ * flags, and one to reflection-runs.json or an archive sidecar would rewrite
+ * its history.
+ */
+export const PROTECTED_PREFIXES = ["memory/reflections/", "memory/meta/", "_history/"];
+
+export function protectedPathError(path: unknown): string | null {
+	if (typeof path !== "string") return null;
+	const p = path.replace(/^\/+/, "");
+	const hit = PROTECTED_PREFIXES.find((prefix) => p.startsWith(prefix));
+	return hit
+		? `Refused: ${hit} is this job's own state and is not writable by the reflection.`
+		: null;
 }

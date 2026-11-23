@@ -34,7 +34,7 @@ import {
 import { type RunRecord, decideNotification, recordRun } from "./run-history";
 import { applySplit, splitConflict } from "./split";
 import { type StagedReflection, archiveReflection, writeStagedReflection } from "./staging";
-import { replaceShrinkError } from "./tool-executor";
+import { protectedPathError, replaceShrinkError } from "./tool-executor";
 
 // Meta file paths
 const LAST_REFLECTION_PATH = "memory/meta/last-reflection.json";
@@ -302,6 +302,18 @@ async function runAgenticReflectionFlow(
 	// pairing; this re-checks for persisted or hand-built proposals.
 	for (const edit of agenticResult.proposedEdits) {
 		try {
+			// Defense in depth for persisted or hand-built proposals; the propose step refuses these too.
+			const protectedError =
+				protectedPathError(edit.path) ??
+				(edit.action === "split" ? protectedPathError(edit.to) : null);
+			if (protectedError) {
+				refusedEdits.push({
+					path: edit.path,
+					action: edit.action,
+					reason: `REFUSED (${protectedError}): ${edit.reason}`,
+				});
+				continue;
+			}
 			const conflict = splitConflict(edit, agenticResult.proposedEdits);
 			if (conflict) {
 				refusedEdits.push({

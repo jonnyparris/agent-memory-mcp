@@ -18,7 +18,18 @@ number goes up for new features, the last number for fixes.
   the model gets the last four runs' flags for its focus and re-checks them
   first, and the card prefixes a repeat with `Repeat (flagged on N earlier runs
   since <date>)`. A new file, `memory/meta/reflection-dispositions.md`, records
-  "keep this, decided" calls; flags on those paths are dropped.
+  "keep this, decided" calls; the model's flags on those paths are dropped
+  (notices about refused deletes or rewrites still come through).
+- **The reflection can no longer write its own state.** `proposeEdit`,
+  `autoApply` and the apply step refuse paths under `memory/meta/`,
+  `memory/reflections/` and `_history/`, so the model can't add a disposition
+  to silence itself or rewrite its run history.
+
+### Changed
+
+- **The people focus no longer scans `memory/context/`.** That folder held a
+  stale 10KB copy of a personal-context file that lives outside memory; it was
+  deleted on 2026-11-23 after being flagged 12 times in a month.
 
 - **The nightly reflection can split a large file instead of only flagging
   it.** A new `proposeSplit` tool names the sections to move (by their exact

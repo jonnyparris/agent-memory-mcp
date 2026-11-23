@@ -9,9 +9,12 @@
  *
  * - the model gets the last few runs' flags for its focus, so it re-checks
  *   them instead of rediscovering them
- * - the card says when a flag is a repeat and since when
+ * - the card says when a path was flagged before, and since when
  * - `memory/meta/reflection-dispositions.md` records "keep, decided" calls;
- *   flags on those paths are dropped in code, not left to the model
+ *   the model's flags on those paths are dropped in code, not left to the
+ *   model. System flags (refused deletes and rewrites, write failures) are
+ *   never dropped. The model can't write `memory/meta/`, so it can't add a
+ *   disposition to silence itself (see PROTECTED_PREFIXES in tool-executor).
  */
 
 import type { R2Storage } from "../storage/r2";
@@ -22,9 +25,11 @@ export const ARCHIVE_DIR = "memory/reflections/archive";
 export const DISPOSITIONS_PATH = "memory/meta/reflection-dispositions.md";
 /** Earlier runs of the same focus to look back over (one a week). */
 export const PRIOR_RUNS = 4;
+/** Most prior paths listed in the prompt; the rest are counted. */
+export const PROMPT_MAX_PATHS = 25;
 const GIST_CHARS = 160;
 /** The prefix annotateFlags adds; stripped before a flag is reused as a gist. */
-const REPEAT_PREFIX = /^Repeat \(flagged on [^)]*\): /;
+const REPEAT_PREFIX = /^Repeat \([^)]*\): /;
 
 export interface PriorFlag {
 	path: string;
@@ -34,6 +39,12 @@ export interface PriorFlag {
 	gist: string;
 }
 
+export interface PriorFlags {
+	/** Run dates looked at, oldest first. */
+	runs: string[];
+	flags: PriorFlag[];
+}
+
 export interface Disposition {
 	path: string;
 	reason: string;
@@ -41,42 +52,52 @@ export interface Disposition {
 	until?: string;
 }
 
-/** Flags from the last PRIOR_RUNS runs with this focus title, before `today`. */
+/** Flags from the last `runs` runs with this focus title, before `today`. */
 export async function loadPriorFlags(
 	storage: R2Storage,
 	focusTitle: string,
 	today: string,
 	runs = PRIOR_RUNS,
-): Promise<PriorFlag[]> {
+): Promise<PriorFlags> {
+	if (runs <= 0) return { runs: [], flags: [] };
 	const history = await readRunHistory(storage);
-	const dates = history
-		.filter((r) => r.focus === focusTitle && r.date < today)
-		.map((r) => r.date)
+	const dates = [
+		...new Set(history.filter((r) => r.focus === focusTitle && r.date < today).map((r) => r.date)),
+	]
 		.sort()
 		.slice(-runs);
 
 	const byPath = new Map<string, PriorFlag>();
+	const used: string[] = [];
 	for (const date of dates) {
-		let flags: FlaggedIssue[] = [];
+		const path = `${ARCHIVE_DIR}/${date}.json`;
+		let parsed: unknown;
 		try {
-			const file = await storage.read(`${ARCHIVE_DIR}/${date}.json`);
+			const file = await storage.read(path);
 			if (!file) continue;
-			const parsed = JSON.parse(file.content);
-			if (Array.isArray(parsed?.flaggedIssues)) flags = parsed.flaggedIssues;
-		} catch {
+			parsed = JSON.parse(file.content);
+		} catch (e) {
+			console.error(JSON.stringify({ event: "prior_flags_read_failed", path, error: String(e) }));
 			continue;
 		}
+		if (!isRecord(parsed)) continue;
+		// History and archive can drift (a manual re-run, a failed history write):
+		// trust the sidecar's own focus when it has one.
+		if (typeof parsed.focus === "string" && parsed.focus !== focusTitle) continue;
+		used.push(date);
+		const flags = Array.isArray(parsed.flaggedIssues) ? parsed.flaggedIssues : [];
 		for (const f of flags) {
-			if (typeof f?.path !== "string" || !f.path) continue;
+			if (!isRecord(f) || typeof f.path !== "string" || !f.path) continue;
 			const entry = byPath.get(f.path) ?? { path: f.path, dates: [], gist: "" };
 			if (!entry.dates.includes(date)) entry.dates.push(date);
 			entry.gist = oneLine(String(f.issue ?? "").replace(REPEAT_PREFIX, "")).slice(0, GIST_CHARS);
 			byPath.set(f.path, entry);
 		}
 	}
-	return [...byPath.values()].sort(
+	const flags = [...byPath.values()].sort(
 		(a, b) => b.dates.length - a.dates.length || a.path.localeCompare(b.path),
 	);
+	return { runs: used, flags };
 }
 
 /**
@@ -91,7 +112,14 @@ export async function loadDispositions(storage: R2Storage, today: string): Promi
 	let content = "";
 	try {
 		content = (await storage.read(DISPOSITIONS_PATH))?.content ?? "";
-	} catch {
+	} catch (e) {
+		console.error(
+			JSON.stringify({
+				event: "dispositions_read_failed",
+				path: DISPOSITIONS_PATH,
+				error: String(e),
+			}),
+		);
 		return [];
 	}
 	return parseDispositions(content).filter((d) => !d.until || d.until >= today);
@@ -112,7 +140,7 @@ export function parseDispositions(content: string): Disposition[] {
 	return out;
 }
 
-/** True if a disposition covers this path (exact file, or a folder entry ending in "/"). */
+/** The disposition covering this path (exact file, or a folder entry ending in "/"), if any. */
 export function covered(path: string, dispositions: Disposition[]): Disposition | undefined {
 	return dispositions.find(
 		(d) => d.path === path || (d.path.endsWith("/") && path.startsWith(d.path)),
@@ -120,19 +148,21 @@ export function covered(path: string, dispositions: Disposition[]): Disposition 
 }
 
 /** The block added to the deep-analysis prompt. Empty when there is nothing to say. */
-export function priorFlagsPrompt(prior: PriorFlag[], dispositions: Disposition[]): string {
+export function priorFlagsPrompt(prior: PriorFlags, dispositions: Disposition[]): string {
 	const parts: string[] = [];
-	const open = prior.filter((p) => !covered(p.path, dispositions));
+	const open = prior.flags.filter((p) => !covered(p.path, dispositions));
 	if (open.length > 0) {
+		const shown = open.slice(0, PROMPT_MAX_PATHS);
+		const more = open.length - shown.length;
 		parts.push(
-			`Earlier runs of this focus flagged these. Re-check each one first: if it is fixed, say nothing about it. If it is still true, flag it again; the card marks it as a repeat, so keep the fix specific and short.\n${open
+			`The last ${prior.runs.length} run(s) of this focus (${prior.runs.join(", ")}) flagged these paths. Re-check each one first: if it is fixed, say nothing about it. If it is still true, flag it again; the card marks it as a repeat, so keep the fix specific and short.\n${shown
 				.map((p) => `- ${p.path} (${p.dates.length}x, first ${p.dates[0]}): ${p.gist}`)
-				.join("\n")}`,
+				.join("\n")}${more > 0 ? `\n- ...and ${more} more` : ""}`,
 		);
 	}
 	if (dispositions.length > 0) {
 		parts.push(
-			`Decided by the human, do not flag (their flags are dropped anyway):\n${dispositions
+			`Decided by the human, do not flag (your flags on these are dropped):\n${dispositions
 				.map((d) => `- ${d.path}: ${d.reason}`)
 				.join("\n")}`,
 		);
@@ -141,33 +171,41 @@ export function priorFlagsPrompt(prior: PriorFlag[], dispositions: Disposition[]
 }
 
 /**
- * Drop flags the human already decided on and mark repeats. Returns the
- * kept flags plus the paths that were dropped.
+ * Drop the model's flags on decided paths and mark paths flagged before.
+ * `modelFlags` holds the flags that came from the flagIssue tool; any other
+ * flag is a system notice and is never dropped.
  */
 export function annotateFlags(
 	flags: FlaggedIssue[],
-	prior: PriorFlag[],
+	prior: PriorFlags,
 	dispositions: Disposition[],
+	modelFlags: ReadonlySet<FlaggedIssue>,
 ): { flags: FlaggedIssue[]; suppressed: string[] } {
-	const byPath = new Map(prior.map((p) => [p.path, p]));
+	const byPath = new Map(prior.flags.map((p) => [p.path, p]));
 	const kept: FlaggedIssue[] = [];
 	const suppressed: string[] = [];
 	for (const f of flags) {
-		if (covered(f.path, dispositions)) {
+		if (modelFlags.has(f) && covered(f.path, dispositions)) {
 			suppressed.push(f.path);
 			continue;
 		}
 		const p = byPath.get(f.path);
 		if (p && !REPEAT_PREFIX.test(f.issue)) {
-			kept.push({
-				...f,
-				issue: `Repeat (flagged on ${p.dates.length} earlier run${p.dates.length === 1 ? "" : "s"} since ${p.dates[0]}): ${f.issue}`,
-			});
+			kept.push({ ...f, issue: `${repeatLabel(p, prior.runs.length)} ${f.issue}` });
 		} else {
 			kept.push(f);
 		}
 	}
 	return { flags: kept, suppressed };
+}
+
+/** "Repeat (path also flagged on 3 of the last 4 runs, first 2026-11-02):" */
+export function repeatLabel(p: PriorFlag, runs: number): string {
+	return `Repeat (path also flagged on ${p.dates.length} of the last ${Math.max(runs, p.dates.length)} runs of this focus, first ${p.dates[0]}):`;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 function oneLine(s: string): string {

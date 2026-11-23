@@ -163,6 +163,71 @@ describe("runAgenticReflection", () => {
 		expect(prompt).not.toContain("memory/learnings.md");
 	});
 
+	it("gives the model last week's flags, marks repeats and drops decided paths", async () => {
+		mockStorage._files.set("memory/meta/reflection-runs.json", {
+			content: JSON.stringify([
+				{
+					date: "2026-11-16",
+					focus: "Stale plans and workload",
+					finished: true,
+					success: true,
+					edits: 0,
+					quickFixes: 0,
+					flagged: 2,
+					failed: 0,
+				},
+			]),
+			updated_at: "2026-11-16T06:00:00Z",
+		});
+		mockStorage._files.set("memory/reflections/archive/2026-11-16.json", {
+			content: JSON.stringify({
+				focus: "Stale plans and workload",
+				flaggedIssues: [
+					{ path: "memory/workload/plans/old.md", issue: "finished plan, archive it" },
+				],
+			}),
+			updated_at: "2026-11-16T06:00:00Z",
+		});
+		mockStorage._files.set("memory/meta/reflection-dispositions.md", {
+			content: "- memory/workload/plans/kept.md — Ruskin keeps it\n",
+			updated_at: "2026-11-20T00:00:00Z",
+		});
+		mockLLMComplete.mockResolvedValueOnce({
+			response: "",
+			toolCalls: [
+				{
+					id: "f1",
+					name: "flagIssue",
+					arguments: { path: "memory/workload/plans/old.md", issue: "still finished" },
+				},
+				{
+					id: "f2",
+					name: "flagIssue",
+					arguments: { path: "memory/workload/plans/kept.md", issue: "looks stale" },
+				},
+				{ id: "f3", name: "finishReflection", arguments: { summary: "done" } },
+			],
+		});
+
+		const result = await runAgenticReflection(mockEnv, mockStorage, {
+			focus: "plans",
+			now: new Date("2026-11-23T06:00:00Z"),
+		});
+
+		const prompt = mockLLMComplete.mock.calls[0][0][0].content as string;
+		expect(prompt).toContain(
+			"- memory/workload/plans/old.md (1x, first 2026-11-16): finished plan, archive it",
+		);
+		expect(prompt).toContain("- memory/workload/plans/kept.md: Ruskin keeps it");
+		expect(result.flaggedIssues).toEqual([
+			{
+				path: "memory/workload/plans/old.md",
+				issue:
+					"Repeat (path also flagged on 1 of the last 1 runs of this focus, first 2026-11-16): still finished",
+			},
+		]);
+	});
+
 	it("uses the model override", async () => {
 		mockLLMComplete.mockResolvedValue({ response: "done", toolCalls: undefined });
 		const result = await runAgenticReflection(mockEnv, mockStorage, { model: "@cf/test/model" });

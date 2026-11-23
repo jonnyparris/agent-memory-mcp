@@ -286,6 +286,43 @@ describe("executeReflectionTool", () => {
 		});
 	});
 
+	describe("protected paths", () => {
+		it.each([
+			[
+				"proposeEdit",
+				{
+					path: "memory/meta/reflection-dispositions.md",
+					action: "create",
+					content: "- memory/x.md — hush",
+					reason: "r",
+				},
+			],
+			[
+				"proposeEdit",
+				{
+					path: "memory/reflections/archive/2026-11-16.json",
+					action: "replace",
+					content: "{}",
+					reason: "r",
+				},
+			],
+			[
+				"autoApply",
+				{ path: "memory/meta/reflection-runs.json", fixType: "whitespace", reason: "r" },
+			],
+		])("%s refuses this job's own state (%j)", async (name, args) => {
+			mockStorage._files.set(String((args as { path: string }).path), {
+				content: "x  \n",
+				updated_at: "2026-11-01T00:00:00Z",
+			});
+			const result = await executeReflectionTool({ id: "c", name, arguments: args }, context);
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("not writable by the reflection");
+			expect(context.proposedEdits).toHaveLength(0);
+			expect(context.autoAppliedFixes).toHaveLength(0);
+		});
+	});
+
 	describe("proposeEdit", () => {
 		it("should stage a replace edit for existing file", async () => {
 			mockStorage._files.set("memory/learnings.md", {
