@@ -32,10 +32,7 @@ export interface RunRecord {
 
 export async function readRunHistory(storage: R2Storage): Promise<RunRecord[]> {
 	try {
-		const file = await storage.read(RUN_HISTORY_PATH);
-		if (!file) return [];
-		const parsed = JSON.parse(file.content);
-		return Array.isArray(parsed) ? parsed : [];
+		return await readRunHistoryStrict(storage);
 	} catch (e) {
 		// Callers fall back to "no history"; say so, or a corrupt file hides itself.
 		console.error(
@@ -49,12 +46,37 @@ export async function readRunHistory(storage: R2Storage): Promise<RunRecord[]> {
 	}
 }
 
+/** Like readRunHistory, but throws on a read error or a file that isn't a JSON array. Missing file = []. */
+async function readRunHistoryStrict(storage: R2Storage): Promise<RunRecord[]> {
+	const file = await storage.read(RUN_HISTORY_PATH);
+	if (!file) return [];
+	const parsed = JSON.parse(file.content);
+	if (!Array.isArray(parsed)) throw new Error(`${RUN_HISTORY_PATH} is not a JSON array`);
+	return parsed;
+}
+
 /**
  * Append a run (replacing any earlier run on the same date, e.g. a manual
- * re-run) and return the updated history, newest last.
+ * re-run) and return the updated history, newest last. If the existing file
+ * can't be read, nothing is written: writing would replace the whole history
+ * with this one record.
  */
 export async function recordRun(storage: R2Storage, record: RunRecord): Promise<RunRecord[]> {
-	const history = (await readRunHistory(storage)).filter((r) => r.date !== record.date);
+	let existing: RunRecord[];
+	try {
+		existing = await readRunHistoryStrict(storage);
+	} catch (e) {
+		console.error(
+			JSON.stringify({
+				event: "run_history_read_failed",
+				path: RUN_HISTORY_PATH,
+				error: String(e),
+				skippedWrite: true,
+			}),
+		);
+		return [record];
+	}
+	const history = existing.filter((r) => r.date !== record.date);
 	history.push(record);
 	history.sort((a, b) => a.date.localeCompare(b.date));
 	const trimmed = history.slice(-MAX_RECORDS);

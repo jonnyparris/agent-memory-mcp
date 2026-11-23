@@ -308,7 +308,7 @@ async function executePropose(
 		flagOnce(
 			context,
 			String(args.path),
-			`Reflection tried to ${args.action} this job's own state and was refused. Its reason: ${args.reason}`,
+			`Reflection's ${args.action} was refused (${protectedError}). Its reason: ${args.reason}`,
 		);
 		return { success: false, error: protectedError };
 	}
@@ -422,6 +422,15 @@ async function executeProposeSplit(
 	}
 	const date = new Date().toISOString().slice(0, 10);
 	// Paths first: a bad or forbidden path should not cost two reads.
+	const protectedError = protectedPathError(args.path) ?? protectedPathError(args.to);
+	if (protectedError) {
+		flagOnce(
+			context,
+			String(args.path),
+			`Reflection's split was refused (${protectedError}). Its reason: ${args.reason}`,
+		);
+		return { success: false, error: protectedError };
+	}
 	const pathErr = splitPathProblem(args.path, args.to, date);
 	if (pathErr) return { success: false, error: `Split refused: ${pathErr}` };
 
@@ -506,10 +515,17 @@ export function replaceShrinkError(
 	return `it would cut the file from ${before} to ${after} characters (${dropped}% removed)`;
 }
 
+/**
+ * Record a system notice once. If the model already flagged the same text,
+ * that entry becomes a system notice too, so a disposition can't drop it.
+ */
 function flagOnce(context: ToolExecutionContext, path: string, issue: string): void {
-	if (!context.flaggedIssues.some((f) => f.path === path && f.issue === issue)) {
-		context.flaggedIssues.push({ path, issue });
+	const existing = context.flaggedIssues.find((f) => f.path === path && f.issue === issue);
+	if (existing) {
+		context.modelFlags?.delete(existing);
+		return;
 	}
+	context.flaggedIssues.push({ path, issue });
 }
 
 /**
@@ -530,7 +546,7 @@ async function executeAutoApply(
 		flagOnce(
 			context,
 			String(args.path),
-			`Reflection tried to auto-fix this job's own state and was refused. Its reason: ${args.reason}`,
+			`Reflection's auto-fix was refused (${protectedError}). Its reason: ${args.reason}`,
 		);
 		return { success: false, error: protectedError };
 	}

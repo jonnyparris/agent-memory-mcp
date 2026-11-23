@@ -101,6 +101,24 @@ describe("loadPriorFlags", () => {
 		expect(await loadPriorFlags(storage, PLANS, "2026-11-23", 0)).toEqual({ runs: [], flags: [] });
 	});
 
+	it("counts a run with no sidecar in the window and skips notices about protected paths", async () => {
+		const storage = createMockStorage();
+		await storage.write(
+			RUN_HISTORY_PATH,
+			JSON.stringify([run("2026-11-09", PLANS), run("2026-11-16", PLANS)]),
+		);
+		await storage.write(
+			"memory/reflections/archive/2026-11-16.json",
+			sidecar([
+				{ path: "memory/meta/reflection-runs.json", issue: "Reflection's replace was refused" },
+				{ path: "memory/x.md", issue: "x" },
+			]),
+		);
+		const prior = await loadPriorFlags(storage, PLANS, "2026-11-23");
+		expect(prior.runs).toEqual(["2026-11-09", "2026-11-16"]);
+		expect(prior.flags.map((p) => p.path)).toEqual(["memory/x.md"]);
+	});
+
 	it("skips a sidecar whose own focus disagrees with the run history", async () => {
 		const storage = createMockStorage();
 		await storage.write(RUN_HISTORY_PATH, JSON.stringify([run("2026-11-16", PLANS)]));
@@ -119,7 +137,10 @@ describe("loadPriorFlags", () => {
 			JSON.stringify([run("2026-11-09", PLANS), run("2026-11-16", PLANS)]),
 		);
 		await storage.write("memory/reflections/archive/2026-11-16.json", "{not json");
-		expect(await loadPriorFlags(storage, PLANS, "2026-11-23")).toEqual({ runs: [], flags: [] });
+		expect(await loadPriorFlags(storage, PLANS, "2026-11-23")).toEqual({
+			runs: ["2026-11-09", "2026-11-16"],
+			flags: [],
+		});
 	});
 });
 
@@ -194,6 +215,32 @@ describe("annotateFlags", () => {
 		]);
 	});
 
+	it("replaces any leading Repeat label, old format or model-copied, with the code's own", () => {
+		const out = annotateFlags(
+			[
+				{
+					path: "memory/a.md",
+					issue:
+						"Repeat (path also flagged on 9 of the last 9 runs of this focus, first 2026-01-01): old label",
+				},
+				{
+					path: "memory/new.md",
+					issue: "Repeat (also flagged on 5 of this focus's last 5 runs, from 2026-10-01): fake",
+				},
+			],
+			prior,
+			[],
+			new Set(),
+		);
+		expect(out.flags).toEqual([
+			{
+				path: "memory/a.md",
+				issue: "Repeat (also flagged on 2 of this focus's last 4 runs, from 2026-11-09): old label",
+			},
+			{ path: "memory/new.md", issue: "fake" },
+		]);
+	});
+
 	it("does not stack the prefix", () => {
 		const issue = "Repeat (also flagged on 2 of this focus's last 4 runs, from 2026-11-09): y";
 		const out = annotateFlags([{ path: "memory/a.md", issue }], prior, [], new Set());
@@ -214,7 +261,7 @@ describe("priorFlagsPrompt", () => {
 			[{ path: "memory/b.md", reason: "kept on purpose" }],
 		);
 		expect(text).toContain("The last 1 run(s) of this focus (2026-11-09)");
-		expect(text).toContain("- memory/a.md (1x, first 2026-11-09): stale a");
+		expect(text).toContain("- memory/a.md (1 of these runs, from 2026-11-09): stale a");
 		expect(text).not.toContain("decided b");
 		expect(text).toContain("- memory/b.md: kept on purpose");
 	});

@@ -216,7 +216,7 @@ describe("runAgenticReflection", () => {
 
 		const prompt = mockLLMComplete.mock.calls[0][0][0].content as string;
 		expect(prompt).toContain(
-			"- memory/workload/plans/old.md (1x, first 2026-11-16): finished plan, archive it",
+			"- memory/workload/plans/old.md (1 of these runs, from 2026-11-16): finished plan, archive it",
 		);
 		expect(prompt).toContain("- memory/workload/plans/kept.md: Ruskin keeps it");
 		expect(result.flaggedIssues).toEqual([

@@ -320,7 +320,46 @@ describe("executeReflectionTool", () => {
 			expect(result.error).toContain("not writable by the reflection");
 			expect(context.proposedEdits).toHaveLength(0);
 			expect(context.autoAppliedFixes).toHaveLength(0);
-			expect(context.flaggedIssues[0].issue).toContain("this job's own state and was refused");
+			expect(context.flaggedIssues[0].issue).toContain("not writable by the reflection");
+		});
+
+		it("a model flag with the same text can't turn the refusal notice into a suppressible flag", async () => {
+			const issue =
+				"Reflection's create was refused (Refused: memory/meta/ is this job's own state and is not writable by the reflection.). Its reason: r";
+			await executeReflectionTool(
+				{ id: "f", name: "flagIssue", arguments: { path: "memory/meta/x.md", issue } },
+				context,
+			);
+			expect(context.modelFlags?.size).toBe(1);
+			await executeReflectionTool(
+				{
+					id: "p",
+					name: "proposeEdit",
+					arguments: { path: "memory/meta/x.md", action: "create", content: "x", reason: "r" },
+				},
+				context,
+			);
+			expect(context.flaggedIssues).toHaveLength(1);
+			expect(context.modelFlags?.size).toBe(0);
+		});
+
+		it("proposeSplit refuses protected paths and leaves a notice", async () => {
+			const result = await executeReflectionTool(
+				{
+					id: "s",
+					name: "proposeSplit",
+					arguments: {
+						path: "memory/meta/reflection-runs.json",
+						to: "memory/meta/x.json",
+						headings: ["# a"],
+						reason: "r",
+					},
+				},
+				context,
+			);
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("not writable by the reflection");
+			expect(context.flaggedIssues[0].issue).toContain("split was refused");
 		});
 
 		it("normalises the path before checking it", async () => {
@@ -339,6 +378,7 @@ describe("executeReflectionTool", () => {
 					context,
 				);
 				expect(result.success, path).toBe(false);
+				expect(result.error, path).toContain("not writable by the reflection");
 			}
 		});
 	});

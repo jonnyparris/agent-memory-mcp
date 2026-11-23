@@ -19,7 +19,7 @@
 
 import type { R2Storage } from "../storage/r2";
 import { readRunHistory } from "./run-history";
-import type { FlaggedIssue } from "./tool-executor";
+import { type FlaggedIssue, protectedPathError } from "./tool-executor";
 
 export const ARCHIVE_DIR = "memory/reflections/archive";
 export const DISPOSITIONS_PATH = "memory/meta/reflection-dispositions.md";
@@ -28,9 +28,12 @@ export const PRIOR_RUNS = 4;
 /** Most prior paths listed in the prompt; the rest are counted. */
 export const PROMPT_MAX_PATHS = 25;
 const GIST_CHARS = 160;
-/** The prefix annotateFlags adds; stripped before a flag is reused as a gist. */
-const REPEAT_PREFIX =
-	/^Repeat \(also flagged on \d+ of this focus's last \d+ runs, from \d{4}-\d{2}-\d{2}\): /;
+/**
+ * Any leading "Repeat (…):" label, ours or one the model copied from an old
+ * card. Stripped before labelling, so the label is always the code's own and
+ * never stacks.
+ */
+const REPEAT_PREFIX = /^(?:Repeat \([^)]*\):\s*)+/;
 
 export interface PriorFlag {
 	path: string;
@@ -69,26 +72,34 @@ export async function loadPriorFlags(
 		.slice(-runs);
 
 	const byPath = new Map<string, PriorFlag>();
-	const used: string[] = [];
+	const window: string[] = [];
 	for (const date of dates) {
 		const path = `${ARCHIVE_DIR}/${date}.json`;
 		let parsed: unknown;
 		try {
 			const file = await storage.read(path);
-			if (!file) continue;
+			// A run with no sidecar still counts toward "the last K runs".
+			if (!file) {
+				window.push(date);
+				continue;
+			}
 			parsed = JSON.parse(file.content);
 		} catch (e) {
 			console.error(JSON.stringify({ event: "prior_flags_read_failed", path, error: String(e) }));
+			window.push(date);
 			continue;
 		}
-		if (!isRecord(parsed)) continue;
 		// History and archive can drift (a manual re-run, a failed history write):
 		// trust the sidecar's own focus when it has one.
-		if (typeof parsed.focus === "string" && parsed.focus !== focusTitle) continue;
-		used.push(date);
+		if (isRecord(parsed) && typeof parsed.focus === "string" && parsed.focus !== focusTitle)
+			continue;
+		window.push(date);
+		if (!isRecord(parsed)) continue;
 		const flags = Array.isArray(parsed.flaggedIssues) ? parsed.flaggedIssues : [];
 		for (const f of flags) {
 			if (!isRecord(f) || typeof f.path !== "string" || !f.path) continue;
+			// Notices about this job's own state are not something the model can re-check.
+			if (protectedPathError(f.path)) continue;
 			const entry = byPath.get(f.path) ?? { path: f.path, dates: [], gist: "" };
 			if (!entry.dates.includes(date)) entry.dates.push(date);
 			entry.gist = oneLine(String(f.issue ?? "").replace(REPEAT_PREFIX, "")).slice(0, GIST_CHARS);
@@ -98,7 +109,7 @@ export async function loadPriorFlags(
 	const flags = [...byPath.values()].sort(
 		(a, b) => b.dates.length - a.dates.length || a.path.localeCompare(b.path),
 	);
-	return { runs: used, flags };
+	return { runs: window, flags };
 }
 
 /**
@@ -157,7 +168,7 @@ export function priorFlagsPrompt(prior: PriorFlags, dispositions: Disposition[])
 		const more = open.length - shown.length;
 		parts.push(
 			`The last ${prior.runs.length} run(s) of this focus (${prior.runs.join(", ")}) flagged these paths. Re-check each one first: if it is fixed, say nothing about it. If it is still true, flag it again; the card marks it as a repeat, so keep the fix specific and short.\n${shown
-				.map((p) => `- ${p.path} (${p.dates.length}x, first ${p.dates[0]}): ${p.gist}`)
+				.map((p) => `- ${p.path} (${p.dates.length} of these runs, from ${p.dates[0]}): ${p.gist}`)
 				.join("\n")}${more > 0 ? `\n- ...and ${more} more` : ""}`,
 		);
 	}
@@ -191,11 +202,9 @@ export function annotateFlags(
 			continue;
 		}
 		const p = byPath.get(f.path);
-		if (p && !REPEAT_PREFIX.test(f.issue)) {
-			kept.push({ ...f, issue: `${repeatLabel(p, prior.runs.length)} ${f.issue}` });
-		} else {
-			kept.push(f);
-		}
+		const issue = f.issue.replace(REPEAT_PREFIX, "");
+		if (p) kept.push({ ...f, issue: `${repeatLabel(p, prior.runs.length)} ${issue}` });
+		else kept.push(issue === f.issue ? f : { ...f, issue });
 	}
 	return { flags: kept, suppressed };
 }

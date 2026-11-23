@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FOCUSES, focusForDate, inFocus } from "../../../src/reflection/focus";
 import {
 	INCOMPLETE_STREAK_ALERT,
@@ -92,5 +92,24 @@ describe("recordRun", () => {
 		const history = await readRunHistory(storage);
 		expect(history.map((r) => r.date)).toEqual(["2026-09-20", "2026-09-21"]);
 		expect(history[1].flagged).toBe(3);
+	});
+});
+
+describe("run history read failures", () => {
+	it("treats a non-array file as unreadable and does not overwrite it", async () => {
+		const storage = createMockStorage();
+		await storage.write("memory/meta/reflection-runs.json", "{}");
+		const errors: string[] = [];
+		const spy = vi.spyOn(console, "error").mockImplementation((m: string) => {
+			errors.push(String(m));
+		});
+		try {
+			expect(await readRunHistory(storage)).toEqual([]);
+			await recordRun(storage, run({ date: "2026-11-23" }));
+		} finally {
+			spy.mockRestore();
+		}
+		expect((await storage.read("memory/meta/reflection-runs.json"))?.content).toBe("{}");
+		expect(errors.filter((e) => e.includes("run_history_read_failed"))).toHaveLength(2);
 	});
 });
