@@ -34,6 +34,7 @@ export async function readRunHistory(storage: R2Storage): Promise<RunRecord[]> {
 	try {
 		return await readRunHistoryStrict(storage);
 	} catch (e) {
+		const salvaged = e instanceof CorruptHistoryError ? e.salvaged : [];
 		// Callers fall back to "no history"; say so, or a corrupt file hides itself.
 		console.error(
 			JSON.stringify({
@@ -42,7 +43,7 @@ export async function readRunHistory(storage: R2Storage): Promise<RunRecord[]> {
 				error: String(e),
 			}),
 		);
-		return [];
+		return salvaged;
 	}
 }
 
@@ -50,9 +51,23 @@ class CorruptHistoryError extends Error {
 	constructor(
 		message: string,
 		readonly content: string,
+		/** Records that were still readable; kept when the file is rewritten. */
+		readonly salvaged: RunRecord[] = [],
 	) {
 		super(message);
 	}
+}
+
+function isRunRecord(r: unknown): r is RunRecord {
+	if (typeof r !== "object" || r === null) return false;
+	const x = r as Record<string, unknown>;
+	return (
+		typeof x.date === "string" &&
+		/^\d{4}-\d{2}-\d{2}$/.test(x.date) &&
+		typeof x.focus === "string" &&
+		typeof x.finished === "boolean" &&
+		typeof x.success === "boolean"
+	);
 }
 
 /**
@@ -75,13 +90,16 @@ async function readRunHistoryStrict(storage: R2Storage): Promise<RunRecord[]> {
 	if (!Array.isArray(parsed)) {
 		throw new CorruptHistoryError(`${RUN_HISTORY_PATH} is not a JSON array`, file.content);
 	}
-	return parsed.filter(
-		(r): r is RunRecord =>
-			typeof r === "object" &&
-			r !== null &&
-			typeof r.date === "string" &&
-			typeof r.focus === "string",
-	);
+	const good = parsed.filter(isRunRecord);
+	if (good.length !== parsed.length) {
+		// Don't silently lose records: recordRun backs the raw file up before it rewrites.
+		throw new CorruptHistoryError(
+			`${RUN_HISTORY_PATH} has ${parsed.length - good.length} malformed entr${parsed.length - good.length === 1 ? "y" : "ies"}`,
+			file.content,
+			good,
+		);
+	}
+	return good;
 }
 
 /**
@@ -109,7 +127,10 @@ export async function recordRun(storage: R2Storage, record: RunRecord): Promise<
 			);
 			return [record];
 		}
-		const backup = RUN_HISTORY_PATH.replace(/\.json$/, `.corrupt-${record.date}.json`);
+		let backup = RUN_HISTORY_PATH.replace(/\.json$/, `.corrupt-${record.date}.json`);
+		for (let n = 2; (await storage.read(backup).catch(() => null)) && n < 100; n++) {
+			backup = RUN_HISTORY_PATH.replace(/\.json$/, `.corrupt-${record.date}-${n}.json`);
+		}
 		try {
 			await storage.write(backup, e.content);
 		} catch (we) {
@@ -131,7 +152,7 @@ export async function recordRun(storage: R2Storage, record: RunRecord): Promise<
 				error: e.message,
 			}),
 		);
-		existing = [];
+		existing = e.salvaged;
 	}
 	const history = existing.filter((r) => r.date !== record.date);
 	history.push(record);

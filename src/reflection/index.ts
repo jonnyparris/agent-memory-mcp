@@ -314,7 +314,8 @@ async function runAgenticReflectionFlow(
 				(edit.action === "split" ? protectedPathError(edit.to) : null);
 			if (protectedError) {
 				refusedEdits.push({
-					path: edit.path,
+					// The refused end, so next week's run doesn't get the notice back as a re-checkable flag.
+					path: protectedPathError(edit.path) ? edit.path : String(edit.to),
 					action: edit.action,
 					reason: `REFUSED (${protectedError}): ${edit.reason}`,
 				});

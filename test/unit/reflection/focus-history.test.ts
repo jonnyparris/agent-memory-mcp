@@ -141,12 +141,34 @@ describe("run history read failures", () => {
 		).toBe("2026-11-22");
 	});
 
-	it("drops malformed entries inside a good array", async () => {
+	it("keeps good entries of a partly malformed array, backs the raw file up, and logs", async () => {
 		const storage = createMockStorage();
-		await storage.write(
-			"memory/meta/reflection-runs.json",
-			JSON.stringify([null, { date: 1 }, run({ date: "2026-11-22" })]),
-		);
-		expect((await readRunHistory(storage)).map((r) => r.date)).toEqual(["2026-11-22"]);
+		const raw = JSON.stringify([
+			null,
+			{ date: 1 },
+			{ date: "2026-11-21", focus: "x" },
+			run({ date: "2026-11-22" }),
+		]);
+		await storage.write("memory/meta/reflection-runs.json", raw);
+		const errors: string[] = [];
+		const spy = vi.spyOn(console, "error").mockImplementation((m: string) => {
+			errors.push(String(m));
+		});
+		try {
+			expect((await readRunHistory(storage)).map((r) => r.date)).toEqual(["2026-11-22"]);
+			const after = await recordRun(storage, run({ date: "2026-11-23" }));
+			expect(after.map((r) => r.date)).toEqual(["2026-11-22", "2026-11-23"]);
+			await storage.write("memory/meta/reflection-runs.json", "{}");
+			await recordRun(storage, run({ date: "2026-11-23" }));
+		} finally {
+			spy.mockRestore();
+		}
+		expect(
+			(await storage.read("memory/meta/reflection-runs.corrupt-2026-11-23.json"))?.content,
+		).toBe(raw);
+		expect(
+			(await storage.read("memory/meta/reflection-runs.corrupt-2026-11-23-2.json"))?.content,
+		).toBe("{}");
+		expect(errors.some((e) => e.includes("3 malformed entries"))).toBe(true);
 	});
 });
