@@ -241,6 +241,23 @@ describe("annotateFlags", () => {
 		]);
 	});
 
+	it("strips a repeat label the model wrote itself", () => {
+		const out = annotateFlags(
+			[
+				{
+					path: "memory/a.md",
+					issue: "Repeat (flagged 2026-10-26, 11-09, 11-16 — unchanged). Two plans blocked",
+				},
+			],
+			prior,
+			[],
+			new Set(),
+		);
+		expect(out.flags[0].issue).toBe(
+			"Repeat (also flagged on 2 of this focus's last 4 runs, from 2026-11-09): Two plans blocked",
+		);
+	});
+
 	it("keeps a Repeat-looking prefix that isn't a label", () => {
 		const out = annotateFlags(
 			[{ path: "memory/new.md", issue: "Repeat (weekly): meeting" }],

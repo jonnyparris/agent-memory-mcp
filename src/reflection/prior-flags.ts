@@ -29,11 +29,12 @@ export const PRIOR_RUNS = 4;
 export const PROMPT_MAX_PATHS = 25;
 const GIST_CHARS = 160;
 /**
- * Any leading "Repeat (…):" label, ours or one the model copied from an old
- * card. Stripped before labelling, so the label is always the code's own and
- * never stacks.
+ * Any leading "Repeat (…):" label: ours, one the model copied from an old
+ * card, or one it wrote itself ("Repeat (flagged 11-09, 11-16 — unchanged).").
+ * Stripped before labelling, so the label is always the code's own and never
+ * stacks. Needs "flagged" inside the parentheses, so "Repeat (weekly):" stays.
  */
-const REPEAT_PREFIX = /^(?:Repeat \([^)]*flagged on[^)]*\):\s*)+/;
+const REPEAT_PREFIX = /^(?:Repeat \([^)]*\bflagged\b[^)]*\)[:.]?\s*)+/;
 
 export interface PriorFlag {
 	path: string;
@@ -167,7 +168,7 @@ export function priorFlagsPrompt(prior: PriorFlags, dispositions: Disposition[])
 		const shown = open.slice(0, PROMPT_MAX_PATHS);
 		const more = open.length - shown.length;
 		parts.push(
-			`The last ${prior.runs.length} run(s) of this focus (${prior.runs.join(", ")}) flagged these paths. Re-check each one first: if it is fixed, say nothing about it. If it is still true, flag it again; the card marks it as a repeat, so keep the fix specific and short.\n${shown
+			`The last ${prior.runs.length} run(s) of this focus (${prior.runs.join(", ")}) flagged these paths. Re-check each one first: if it is fixed, say nothing about it. If it is still true, flag it again; the card adds the repeat label itself, so don't write one, and keep the fix specific and short.\n${shown
 				.map((p) => `- ${p.path} (${p.dates.length} of these runs, from ${p.dates[0]}): ${p.gist}`)
 				.join("\n")}${more > 0 ? `\n- ...and ${more} more` : ""}`,
 		);
