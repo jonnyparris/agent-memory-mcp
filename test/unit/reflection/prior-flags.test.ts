@@ -241,6 +241,16 @@ describe("annotateFlags", () => {
 		]);
 	});
 
+	it("keeps a Repeat-looking prefix that isn't a label", () => {
+		const out = annotateFlags(
+			[{ path: "memory/new.md", issue: "Repeat (weekly): meeting" }],
+			prior,
+			[],
+			new Set(),
+		);
+		expect(out.flags[0].issue).toBe("Repeat (weekly): meeting");
+	});
+
 	it("does not stack the prefix", () => {
 		const issue = "Repeat (also flagged on 2 of this focus's last 4 runs, from 2026-11-09): y";
 		const out = annotateFlags([{ path: "memory/a.md", issue }], prior, [], new Set());

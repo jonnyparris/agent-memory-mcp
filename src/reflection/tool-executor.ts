@@ -424,9 +424,11 @@ async function executeProposeSplit(
 	// Paths first: a bad or forbidden path should not cost two reads.
 	const protectedError = protectedPathError(args.path) ?? protectedPathError(args.to);
 	if (protectedError) {
+		// File the notice on the end that was refused, so next week's run doesn't get it back as a re-checkable flag.
+		const noticePath = String(protectedPathError(args.path) ? args.path : args.to);
 		flagOnce(
 			context,
-			String(args.path),
+			noticePath,
 			`Reflection's split was refused (${protectedError}). Its reason: ${args.reason}`,
 		);
 		return { success: false, error: protectedError };

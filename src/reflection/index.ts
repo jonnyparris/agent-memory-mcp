@@ -261,7 +261,10 @@ function refusedIssue(e: ReflectionChange): string {
 	if (e.action === "delete") {
 		return `Reflection proposed deleting this file and was refused: ${e.reason}`;
 	}
-	if (e.reason.includes("not writable by the reflection")) {
+	if (
+		e.reason.startsWith("REFUSED (Refused: ") &&
+		e.reason.includes("not writable by the reflection")
+	) {
 		return `Reflection proposed a ${e.action} of a path it may not write, and it was refused: ${e.reason}`;
 	}
 	if (e.reason.startsWith("REFUSED (a split")) {

@@ -96,7 +96,7 @@ describe("recordRun", () => {
 });
 
 describe("run history read failures", () => {
-	it("treats a non-array file as unreadable and does not overwrite it", async () => {
+	it("backs up a corrupt file, then heals it", async () => {
 		const storage = createMockStorage();
 		await storage.write("memory/meta/reflection-runs.json", "{}");
 		const errors: string[] = [];
@@ -109,7 +109,44 @@ describe("run history read failures", () => {
 		} finally {
 			spy.mockRestore();
 		}
-		expect((await storage.read("memory/meta/reflection-runs.json"))?.content).toBe("{}");
-		expect(errors.filter((e) => e.includes("run_history_read_failed"))).toHaveLength(2);
+		expect(
+			(await storage.read("memory/meta/reflection-runs.corrupt-2026-11-23.json"))?.content,
+		).toBe("{}");
+		expect(
+			JSON.parse((await storage.read("memory/meta/reflection-runs.json"))?.content ?? ""),
+		).toHaveLength(1);
+		expect(errors.some((e) => e.includes("run_history_read_failed"))).toBe(true);
+		expect(errors.some((e) => e.includes("run_history_corrupt_reset"))).toBe(true);
+	});
+
+	it("skips the write when storage itself fails", async () => {
+		const storage = createMockStorage();
+		await storage.write(
+			"memory/meta/reflection-runs.json",
+			JSON.stringify([run({ date: "2026-11-22" })]),
+		);
+		const read = storage.read.bind(storage);
+		storage.read = async () => {
+			throw new Error("R2 down");
+		};
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(await recordRun(storage, run({ date: "2026-11-23" }))).toHaveLength(1);
+		} finally {
+			spy.mockRestore();
+			storage.read = read;
+		}
+		expect(
+			JSON.parse((await storage.read("memory/meta/reflection-runs.json"))?.content ?? "")[0].date,
+		).toBe("2026-11-22");
+	});
+
+	it("drops malformed entries inside a good array", async () => {
+		const storage = createMockStorage();
+		await storage.write(
+			"memory/meta/reflection-runs.json",
+			JSON.stringify([null, { date: 1 }, run({ date: "2026-11-22" })]),
+		);
+		expect((await readRunHistory(storage)).map((r) => r.date)).toEqual(["2026-11-22"]);
 	});
 });

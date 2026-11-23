@@ -46,35 +46,92 @@ export async function readRunHistory(storage: R2Storage): Promise<RunRecord[]> {
 	}
 }
 
-/** Like readRunHistory, but throws on a read error or a file that isn't a JSON array. Missing file = []. */
+class CorruptHistoryError extends Error {
+	constructor(
+		message: string,
+		readonly content: string,
+	) {
+		super(message);
+	}
+}
+
+/**
+ * Like readRunHistory, but throws. A storage error is thrown as is; a file
+ * that isn't a JSON array of records is a CorruptHistoryError carrying the
+ * raw text. Malformed entries inside a good array are dropped. Missing file = [].
+ */
 async function readRunHistoryStrict(storage: R2Storage): Promise<RunRecord[]> {
 	const file = await storage.read(RUN_HISTORY_PATH);
 	if (!file) return [];
-	const parsed = JSON.parse(file.content);
-	if (!Array.isArray(parsed)) throw new Error(`${RUN_HISTORY_PATH} is not a JSON array`);
-	return parsed;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(file.content);
+	} catch (e) {
+		throw new CorruptHistoryError(
+			`${RUN_HISTORY_PATH} is not valid JSON: ${String(e)}`,
+			file.content,
+		);
+	}
+	if (!Array.isArray(parsed)) {
+		throw new CorruptHistoryError(`${RUN_HISTORY_PATH} is not a JSON array`, file.content);
+	}
+	return parsed.filter(
+		(r): r is RunRecord =>
+			typeof r === "object" &&
+			r !== null &&
+			typeof r.date === "string" &&
+			typeof r.focus === "string",
+	);
 }
 
 /**
  * Append a run (replacing any earlier run on the same date, e.g. a manual
- * re-run) and return the updated history, newest last. If the existing file
- * can't be read, nothing is written: writing would replace the whole history
- * with this one record.
+ * re-run) and return the updated history, newest last.
+ *
+ * A storage error while reading skips the write: writing would replace the
+ * whole history with this one record. A corrupt file is copied aside to
+ * `reflection-runs.corrupt-<date>.json` and then replaced, so history heals
+ * instead of freezing.
  */
 export async function recordRun(storage: R2Storage, record: RunRecord): Promise<RunRecord[]> {
 	let existing: RunRecord[];
 	try {
 		existing = await readRunHistoryStrict(storage);
 	} catch (e) {
+		if (!(e instanceof CorruptHistoryError)) {
+			console.error(
+				JSON.stringify({
+					event: "run_history_read_failed",
+					path: RUN_HISTORY_PATH,
+					error: String(e),
+					skippedWrite: true,
+				}),
+			);
+			return [record];
+		}
+		const backup = RUN_HISTORY_PATH.replace(/\.json$/, `.corrupt-${record.date}.json`);
+		try {
+			await storage.write(backup, e.content);
+		} catch (we) {
+			console.error(
+				JSON.stringify({
+					event: "run_history_backup_failed",
+					path: backup,
+					error: String(we),
+					skippedWrite: true,
+				}),
+			);
+			return [record];
+		}
 		console.error(
 			JSON.stringify({
-				event: "run_history_read_failed",
+				event: "run_history_corrupt_reset",
 				path: RUN_HISTORY_PATH,
-				error: String(e),
-				skippedWrite: true,
+				backup,
+				error: e.message,
 			}),
 		);
-		return [record];
+		existing = [];
 	}
 	const history = existing.filter((r) => r.date !== record.date);
 	history.push(record);

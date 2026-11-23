@@ -33,7 +33,7 @@ const GIST_CHARS = 160;
  * card. Stripped before labelling, so the label is always the code's own and
  * never stacks.
  */
-const REPEAT_PREFIX = /^(?:Repeat \([^)]*\):\s*)+/;
+const REPEAT_PREFIX = /^(?:Repeat \([^)]*flagged on[^)]*\):\s*)+/;
 
 export interface PriorFlag {
 	path: string;

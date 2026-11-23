@@ -293,7 +293,7 @@ describe("executeReflectionTool", () => {
 				{
 					path: "memory/meta/reflection-dispositions.md",
 					action: "create",
-					content: "- memory/x.md — hush",
+					content: "- memory/x.md - hush",
 					reason: "r",
 				},
 			],
@@ -360,6 +360,28 @@ describe("executeReflectionTool", () => {
 			expect(result.success).toBe(false);
 			expect(result.error).toContain("not writable by the reflection");
 			expect(context.flaggedIssues[0].issue).toContain("split was refused");
+			expect(context.flaggedIssues[0].path).toBe("memory/meta/reflection-runs.json");
+		});
+
+		it("files a split notice on the protected end", async () => {
+			mockStorage._files.set("memory/big.md", {
+				content: "# a\n",
+				updated_at: "2026-11-01T00:00:00Z",
+			});
+			await executeReflectionTool(
+				{
+					id: "s",
+					name: "proposeSplit",
+					arguments: {
+						path: "memory/big.md",
+						to: "memory/meta/x.md",
+						headings: ["# a"],
+						reason: "r",
+					},
+				},
+				context,
+			);
+			expect(context.flaggedIssues[0].path).toBe("memory/meta/x.md");
 		});
 
 		it("normalises the path before checking it", async () => {
