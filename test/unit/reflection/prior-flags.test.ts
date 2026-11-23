@@ -262,6 +262,7 @@ describe("annotateFlags", () => {
 		"Repeat (flagged 11-09) — still stale: x",
 		"repeat (Flagged 11-09 (2 of 4 runs) — unchanged). x",
 		" Repeat (flagged 11-09) : x",
+		"Repeat (flagged 11-09) -- x",
 	])("strips model label shapes: %s", (issue) => {
 		const out = annotateFlags([{ path: "memory/a.md", issue }], prior, [], new Set());
 		expect(out.flags[0].issue).toMatch(
@@ -277,6 +278,16 @@ describe("annotateFlags", () => {
 	])("keeps a Repeat-looking prefix that isn't a label: %s", (issue) => {
 		const out = annotateFlags([{ path: "memory/new.md", issue }], prior, [], new Set());
 		expect(out.flags[0].issue).toBe(issue);
+	});
+
+	it("keeps a flag that was only a label rather than blanking it", () => {
+		const out = annotateFlags(
+			[{ path: "memory/new.md", issue: "Repeat (flagged 11-09)." }],
+			prior,
+			[],
+			new Set(),
+		);
+		expect(out.flags[0].issue).toBe("Repeat (flagged 11-09).");
 	});
 
 	it("strips a model label from a non-prior path", () => {

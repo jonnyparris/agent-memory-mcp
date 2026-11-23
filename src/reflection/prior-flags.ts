@@ -38,7 +38,7 @@ const GIST_CHARS = 160;
  * nested parentheses and a trailing ":", ".", "," or dash are taken too.
  */
 const REPEAT_PREFIX =
-	/^\s*(?:repeat\s*\((?:path\s+)?(?:also\s+)?flagged\s+(?:on\s+)?\d(?:[^()]|\([^()]*\))*\)\s*[:.,\u2014\u2013-]?\s*)+/i;
+	/^\s*(?:repeat\s*\((?:path\s+)?(?:also\s+)?flagged\s+(?:on\s+)?\d(?:[^()]|\([^()]*\))*\)\s*(?:[:.,]|[\u2014\u2013-]+)?\s*)+/i;
 
 export interface PriorFlag {
 	path: string;
@@ -207,7 +207,8 @@ export function annotateFlags(
 			continue;
 		}
 		const p = byPath.get(f.path);
-		const issue = f.issue.replace(REPEAT_PREFIX, "");
+		// A flag that was only a label keeps its text rather than going blank.
+		const issue = f.issue.replace(REPEAT_PREFIX, "") || f.issue.trim();
 		if (p) kept.push({ ...f, issue: `${repeatLabel(p, prior.runs.length)} ${issue}` });
 		else kept.push(issue === f.issue ? f : { ...f, issue });
 	}
