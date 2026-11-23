@@ -35,7 +35,7 @@ export async function readRunHistory(storage: R2Storage): Promise<RunRecord[]> {
 		return await readRunHistoryStrict(storage);
 	} catch (e) {
 		const salvaged = e instanceof CorruptHistoryError ? e.salvaged : [];
-		// Callers fall back to "no history"; say so, or a corrupt file hides itself.
+		// Callers fall back to the records still readable (none for a storage error); say so, or a corrupt file hides itself.
 		console.error(
 			JSON.stringify({
 				event: "run_history_read_failed",
@@ -71,9 +71,10 @@ function isRunRecord(r: unknown): r is RunRecord {
 }
 
 /**
- * Like readRunHistory, but throws. A storage error is thrown as is; a file
- * that isn't a JSON array of records is a CorruptHistoryError carrying the
- * raw text. Malformed entries inside a good array are dropped. Missing file = [].
+ * Like readRunHistory, but throws. A storage error is thrown as is. A file
+ * that isn't a JSON array, or an array with malformed entries, is a
+ * CorruptHistoryError carrying the raw text and the readable records
+ * (`salvaged`); recordRun backs the raw file up before rewriting. Missing file = [].
  */
 async function readRunHistoryStrict(storage: R2Storage): Promise<RunRecord[]> {
 	const file = await storage.read(RUN_HISTORY_PATH);
@@ -108,8 +109,9 @@ async function readRunHistoryStrict(storage: R2Storage): Promise<RunRecord[]> {
  *
  * A storage error while reading skips the write: writing would replace the
  * whole history with this one record. A corrupt file is copied aside to
- * `reflection-runs.corrupt-<date>.json` and then replaced, so history heals
- * instead of freezing.
+ * `reflection-runs.corrupt-<date>.json` (`-2`, `-3`… if that day's backup
+ * exists) and then rewritten with the readable records, so history heals
+ * instead of freezing. If no free backup name can be confirmed, nothing is written.
  */
 export async function recordRun(storage: R2Storage, record: RunRecord): Promise<RunRecord[]> {
 	let existing: RunRecord[];
@@ -127,11 +129,16 @@ export async function recordRun(storage: R2Storage, record: RunRecord): Promise<
 			);
 			return [record];
 		}
-		let backup = RUN_HISTORY_PATH.replace(/\.json$/, `.corrupt-${record.date}.json`);
-		for (let n = 2; (await storage.read(backup).catch(() => null)) && n < 100; n++) {
-			backup = RUN_HISTORY_PATH.replace(/\.json$/, `.corrupt-${record.date}-${n}.json`);
-		}
+		let backup: string | undefined;
 		try {
+			for (let n = 1; n < 100 && !backup; n++) {
+				const name = RUN_HISTORY_PATH.replace(
+					/\.json$/,
+					`.corrupt-${record.date}${n === 1 ? "" : `-${n}`}.json`,
+				);
+				if (!(await storage.read(name))) backup = name;
+			}
+			if (!backup) throw new Error("no free backup name");
 			await storage.write(backup, e.content);
 		} catch (we) {
 			console.error(

@@ -147,6 +147,8 @@ describe("run history read failures", () => {
 			null,
 			{ date: 1 },
 			{ date: "2026-11-21", focus: "x" },
+			run({ date: "2026-1-1" }),
+			{ ...run({ date: "2026-11-20" }), finished: "yes" },
 			run({ date: "2026-11-22" }),
 		]);
 		await storage.write("memory/meta/reflection-runs.json", raw);
@@ -169,6 +171,6 @@ describe("run history read failures", () => {
 		expect(
 			(await storage.read("memory/meta/reflection-runs.corrupt-2026-11-23-2.json"))?.content,
 		).toBe("{}");
-		expect(errors.some((e) => e.includes("3 malformed entries"))).toBe(true);
+		expect(errors.some((e) => e.includes("5 malformed entries"))).toBe(true);
 	});
 });
