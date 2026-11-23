@@ -29,7 +29,8 @@ export const PRIOR_RUNS = 4;
 export const PROMPT_MAX_PATHS = 25;
 const GIST_CHARS = 160;
 /** The prefix annotateFlags adds; stripped before a flag is reused as a gist. */
-const REPEAT_PREFIX = /^Repeat \([^)]*\): /;
+const REPEAT_PREFIX =
+	/^Repeat \(also flagged on \d+ of this focus's last \d+ runs, from \d{4}-\d{2}-\d{2}\): /;
 
 export interface PriorFlag {
 	path: string;
@@ -199,9 +200,9 @@ export function annotateFlags(
 	return { flags: kept, suppressed };
 }
 
-/** "Repeat (path also flagged on 3 of the last 4 runs, first 2026-11-02):" */
+/** "Repeat (also flagged on 3 of this focus's last 4 runs, from 2026-11-02):" (the window only, not all history). */
 export function repeatLabel(p: PriorFlag, runs: number): string {
-	return `Repeat (path also flagged on ${p.dates.length} of the last ${Math.max(runs, p.dates.length)} runs of this focus, first ${p.dates[0]}):`;
+	return `Repeat (also flagged on ${p.dates.length} of this focus's last ${Math.max(runs, p.dates.length)} runs, from ${p.dates[0]}):`;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

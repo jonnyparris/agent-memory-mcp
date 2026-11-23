@@ -304,7 +304,14 @@ async function executePropose(
 	// the auto-apply phase. The apply phase refuses it independently as
 	// defense-in-depth for persisted or externally-constructed proposals.
 	const protectedError = protectedPathError(args.path);
-	if (protectedError) return { success: false, error: protectedError };
+	if (protectedError) {
+		flagOnce(
+			context,
+			String(args.path),
+			`Reflection tried to ${args.action} this job's own state and was refused. Its reason: ${args.reason}`,
+		);
+		return { success: false, error: protectedError };
+	}
 
 	if (args.action === "delete") {
 		context.flaggedIssues.push({
@@ -519,7 +526,14 @@ async function executeAutoApply(
 	context: ToolExecutionContext,
 ): Promise<ToolResult> {
 	const protectedError = protectedPathError(args.path);
-	if (protectedError) return { success: false, error: protectedError };
+	if (protectedError) {
+		flagOnce(
+			context,
+			String(args.path),
+			`Reflection tried to auto-fix this job's own state and was refused. Its reason: ${args.reason}`,
+		);
+		return { success: false, error: protectedError };
+	}
 
 	// Read current file
 	const file = await context.storage.read(args.path);
@@ -728,8 +742,12 @@ export const PROTECTED_PREFIXES = ["memory/reflections/", "memory/meta/", "_hist
 
 export function protectedPathError(path: unknown): string | null {
 	if (typeof path !== "string") return null;
-	const p = path.replace(/^\/+/, "");
-	const hit = PROTECTED_PREFIXES.find((prefix) => p.startsWith(prefix));
+	// Normalise empty and "." segments so memory//meta/x and memory/./meta/x don't slip past.
+	const segments = path.split("/").filter((s) => s !== "" && s !== ".");
+	if (segments.includes(".."))
+		return "Refused: paths with '..' are not writable by the reflection.";
+	const p = segments.join("/");
+	const hit = PROTECTED_PREFIXES.find((prefix) => `${p}/`.startsWith(prefix));
 	return hit
 		? `Refused: ${hit} is this job's own state and is not writable by the reflection.`
 		: null;

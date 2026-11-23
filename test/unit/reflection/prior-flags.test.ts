@@ -65,7 +65,7 @@ async function seed(storage: ReturnType<typeof createMockStorage>) {
 			{
 				path: "memory/workload/plans/a.md",
 				issue:
-					"Repeat (path also flagged on 2 of the last 2 runs of this focus, first 2026-11-02): a\n  newest",
+					"Repeat (also flagged on 2 of this focus's last 2 runs, from 2026-11-02): a\n  newest",
 			},
 		]),
 	);
@@ -187,7 +187,7 @@ describe("annotateFlags", () => {
 			{
 				path: "memory/a.md",
 				issue:
-					"Repeat (path also flagged on 2 of the last 4 runs of this focus, first 2026-11-09): still stale",
+					"Repeat (also flagged on 2 of this focus's last 4 runs, from 2026-11-09): still stale",
 			},
 			system,
 			fresh,
@@ -195,8 +195,7 @@ describe("annotateFlags", () => {
 	});
 
 	it("does not stack the prefix", () => {
-		const issue =
-			"Repeat (path also flagged on 2 of the last 4 runs of this focus, first 2026-11-09): y";
+		const issue = "Repeat (also flagged on 2 of this focus's last 4 runs, from 2026-11-09): y";
 		const out = annotateFlags([{ path: "memory/a.md", issue }], prior, [], new Set());
 		expect(out.flags[0].issue).toBe(issue);
 	});

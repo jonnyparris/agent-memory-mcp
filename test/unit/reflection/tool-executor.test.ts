@@ -320,6 +320,26 @@ describe("executeReflectionTool", () => {
 			expect(result.error).toContain("not writable by the reflection");
 			expect(context.proposedEdits).toHaveLength(0);
 			expect(context.autoAppliedFixes).toHaveLength(0);
+			expect(context.flaggedIssues[0].issue).toContain("this job's own state and was refused");
+		});
+
+		it("normalises the path before checking it", async () => {
+			for (const path of [
+				"memory//meta/x.md",
+				"memory/./meta/x.md",
+				"/memory/meta/x.md",
+				"memory/../memory/meta/x.md",
+			]) {
+				const result = await executeReflectionTool(
+					{
+						id: "c",
+						name: "proposeEdit",
+						arguments: { path, action: "create", content: "x", reason: "r" },
+					},
+					context,
+				);
+				expect(result.success, path).toBe(false);
+			}
 		});
 	});
 

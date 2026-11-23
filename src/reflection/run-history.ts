@@ -36,7 +36,15 @@ export async function readRunHistory(storage: R2Storage): Promise<RunRecord[]> {
 		if (!file) return [];
 		const parsed = JSON.parse(file.content);
 		return Array.isArray(parsed) ? parsed : [];
-	} catch {
+	} catch (e) {
+		// Callers fall back to "no history"; say so, or a corrupt file hides itself.
+		console.error(
+			JSON.stringify({
+				event: "run_history_read_failed",
+				path: RUN_HISTORY_PATH,
+				error: String(e),
+			}),
+		);
 		return [];
 	}
 }

@@ -261,6 +261,12 @@ function refusedIssue(e: ReflectionChange): string {
 	if (e.action === "delete") {
 		return `Reflection proposed deleting this file and was refused: ${e.reason}`;
 	}
+	if (
+		e.reason.startsWith("REFUSED (Refused: ") &&
+		e.reason.includes("not writable by the reflection")
+	) {
+		return `Reflection tried to ${e.action} this job's own state and was refused: ${e.reason}`;
+	}
 	if (e.reason.startsWith("REFUSED (a split")) {
 		return `Reflection proposed a ${e.action} of a file a split moves sections out of or into, and it was refused: ${e.reason}`;
 	}

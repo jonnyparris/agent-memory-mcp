@@ -223,7 +223,7 @@ describe("runAgenticReflection", () => {
 			{
 				path: "memory/workload/plans/old.md",
 				issue:
-					"Repeat (path also flagged on 1 of the last 1 runs of this focus, first 2026-11-16): still finished",
+					"Repeat (also flagged on 1 of this focus's last 1 runs, from 2026-11-16): still finished",
 			},
 		]);
 	});
