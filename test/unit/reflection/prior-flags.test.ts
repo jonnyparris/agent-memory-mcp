@@ -65,7 +65,7 @@ async function seed(storage: ReturnType<typeof createMockStorage>) {
 			{
 				path: "memory/workload/plans/a.md",
 				issue:
-					"Repeat (also flagged on 2 of this focus's last 2 runs, from 2026-11-02): a\n  newest",
+					"Repeat (also flagged on 2 of this focus's last 2 runs, from 2026-11-02): Repeat (flagged 11-02, 11-09 — unchanged). a\n  newest",
 			},
 		]),
 	);
@@ -258,14 +258,35 @@ describe("annotateFlags", () => {
 		);
 	});
 
-	it("keeps a Repeat-looking prefix that isn't a label", () => {
+	it.each([
+		"Repeat (flagged 11-09) — still stale: x",
+		"repeat (Flagged 11-09 (2 of 4 runs) — unchanged). x",
+		" Repeat (flagged 11-09) : x",
+	])("strips model label shapes: %s", (issue) => {
+		const out = annotateFlags([{ path: "memory/a.md", issue }], prior, [], new Set());
+		expect(out.flags[0].issue).toMatch(
+			/^Repeat \(also flagged on 2 of this focus's last 4 runs, from 2026-11-09\): (still stale: )?x$/,
+		);
+	});
+
+	it.each([
+		"Repeat (weekly): meeting",
+		"Repeat (flagged by Ruskin 11-02): y",
+		"Repeat (not flagged by the linter): z",
+		"Repeat (flagged on Tuesday): w",
+	])("keeps a Repeat-looking prefix that isn't a label: %s", (issue) => {
+		const out = annotateFlags([{ path: "memory/new.md", issue }], prior, [], new Set());
+		expect(out.flags[0].issue).toBe(issue);
+	});
+
+	it("strips a model label from a non-prior path", () => {
 		const out = annotateFlags(
-			[{ path: "memory/new.md", issue: "Repeat (weekly): meeting" }],
+			[{ path: "memory/new.md", issue: "Repeat (flagged 11-09): v" }],
 			prior,
 			[],
 			new Set(),
 		);
-		expect(out.flags[0].issue).toBe("Repeat (weekly): meeting");
+		expect(out.flags[0].issue).toBe("v");
 	});
 
 	it("does not stack the prefix", () => {

@@ -32,9 +32,13 @@ const GIST_CHARS = 160;
  * Any leading "Repeat (…):" label: ours, one the model copied from an old
  * card, or one it wrote itself ("Repeat (flagged 11-09, 11-16 — unchanged).").
  * Stripped before labelling, so the label is always the code's own and never
- * stacks. Needs "flagged" inside the parentheses, so "Repeat (weekly):" stays.
+ * stacks. The parentheses must open with "[path] [also] flagged" and a number
+ * ("flagged on 3 of…", "flagged 11-09…"), so "Repeat (weekly):", "Repeat
+ * (flagged by Ruskin):" and "Repeat (not flagged…):" stay. One level of
+ * nested parentheses and a trailing ":", ".", "," or dash are taken too.
  */
-const REPEAT_PREFIX = /^(?:Repeat \([^)]*\bflagged\b[^)]*\)[:.]?\s*)+/;
+const REPEAT_PREFIX =
+	/^\s*(?:repeat\s*\((?:path\s+)?(?:also\s+)?flagged\s+(?:on\s+)?\d(?:[^()]|\([^()]*\))*\)\s*[:.,\u2014\u2013-]?\s*)+/i;
 
 export interface PriorFlag {
 	path: string;
